@@ -22,3 +22,7 @@ Desktop.ini
 *.msi
 *.wixobj
 *.wixpdb
+
+# Agent execution scratch (ledgers)
+/.superpowers/
+.claude

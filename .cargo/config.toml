@@ -1,0 +1,6 @@
+# Static CRT: no VC++ redistributable needed on clean machines (Z1, ADR 0006).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

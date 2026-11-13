@@ -1,0 +1,16 @@
+[package]
+name = "atropos-fixtures"
+description = "Test-only executables and a spawn harness that yields the ProcKey of what it spawned"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+atropos-core = { path = "../atropos-core" }
+anyhow = "1"

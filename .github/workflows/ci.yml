@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: release build
+        run: cargo build --release --workspace
+      - name: binary size + no CRT imports
+        run: pwsh scripts/perf.ps1 -Mode size,deps -Renderer ci -Baseline perf/baseline.ci.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: |
+            target/release/Atropos.exe
+            target/release/atr.exe
+
+  linux-core:
+    # Core logic must stay platform-neutral: run it against the fake backend.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: core tests (fake backend)
+        run: cargo test -p atropos-core
+
+  perf:
+    needs: windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: release build
+        run: cargo build --release --workspace
+      # The 10-minute idle run is local-only (runner time); CI runs a 2-minute window
+      # against its own baseline (perf/baseline.ci.json), failing on > 20% regression.
+      - name: startup + idle
+        run: pwsh scripts/perf.ps1 -Mode startup,idle -Minutes 2 -WarmupSeconds 15 -Renderer ci -Baseline perf/baseline.ci.json -RecordWsOnly
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-results
+          path: perf/results/

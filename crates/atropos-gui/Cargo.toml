@@ -1,0 +1,34 @@
+[package]
+name = "atropos-gui"
+description = "Atropos GUI (Atropos.exe)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "Atropos"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = ["renderer-glow"]
+renderer-glow = ["eframe/glow"]
+# eframe ships wgpu with no backends when its defaults are off; DX12 is the native Windows one.
+renderer-wgpu = ["eframe/wgpu", "dep:wgpu"]
+
+[dependencies]
+anyhow = "1.0.104"
+atropos-core = { path = "../atropos-core" }
+eframe = { version = "0.32.3", default-features = false, features = ["default_fonts"] }
+egui_extras = { version = "0.32.3", default-features = false }
+wgpu = { version = "25.0.2", default-features = false, features = ["dx12", "wgsl"], optional = true }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+
+[build-dependencies]
+embed-resource = "3.0.12"

@@ -1,0 +1,24 @@
+# Private planning material
+/.private/
+docs/
+
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Perf run outputs (baselines under perf/baseline.json ARE committed)
+/perf/results/
+
+# Local tooling / editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Packaging scratch
+/dist/
+*.msi
+*.wixobj
+*.wixpdb

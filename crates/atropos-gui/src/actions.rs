@@ -13,7 +13,7 @@ use atropos_core::platform::windows::{LocalTime, WindowsPlatform};
 use eframe::egui;
 
 use crate::dialog::{self, Answer, Dialog, Kind};
-use crate::toast::{self, Toasts};
+use crate::toast::{self, Retry, Toasts};
 
 /// What the user asked to do to a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +35,37 @@ impl Act {
     }
 }
 
+/// The elevated retry that fits an executor result: the members Windows refused.
+#[must_use]
+pub fn retry_for(e: &Event) -> Option<Retry> {
+    use atropos_core::engine::kill::Outcome;
+    use atropos_core::engine::suspend::Toggle;
+    use atropos_helper::protocol::Op;
+    let (keys, op): (Vec<ProcKey>, Op) = match e {
+        Event::Killed(k, Outcome::Denied) => (vec![*k], Op::GracefulClose),
+        Event::TreeKilled(_, r) => (
+            r.members
+                .iter()
+                .filter(|(_, o)| *o == Outcome::Denied)
+                .map(|(k, _)| *k)
+                .collect(),
+            Op::Terminate,
+        ),
+        Event::Toggled {
+            suspend, results, ..
+        } => (
+            results
+                .iter()
+                .filter(|(_, t, _)| *t == Toggle::Denied)
+                .map(|(k, _, _)| *k)
+                .collect(),
+            if *suspend { Op::Suspend } else { Op::Resume },
+        ),
+        _ => return None,
+    };
+    (!keys.is_empty()).then_some(Retry { keys, op })
+}
+
 /// What to do once the policy verdict for `act` is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Next {
@@ -44,6 +75,17 @@ pub enum Next {
     Send,
     /// Refused: tell the user why.
     Refuse,
+}
+
+/// [`next_step`] under the user's confirmation policy.
+#[must_use]
+pub fn next_step_with(act: Act, verdict: &Verdict, confirm: atropos_core::config::Confirm) -> Next {
+    match (act, verdict, confirm) {
+        (Act::Kill | Act::KillTree, Verdict::Allowed, atropos_core::config::Confirm::Risky) => {
+            Next::Send
+        }
+        _ => next_step(act, verdict),
+    }
 }
 
 /// Decision table: kills always confirm; suspend/resume run directly unless blocked.
@@ -71,6 +113,15 @@ pub struct Actions {
     /// Atropos's outstanding suspends per process.
     counts: HashMap<ProcKey, u32>,
     pub toasts: Toasts,
+    /// Atropos's own key (the helper's parent), when known.
+    me: Option<ProcKey>,
+    /// Started on the first "Retry as administrator".
+    elevated: Option<crate::elevate::Elevated>,
+    repaint: Option<egui::Context>,
+    /// From the settings.
+    pub grace: std::time::Duration,
+    pub confirm: atropos_core::config::Confirm,
+    journal: Option<std::sync::Arc<std::sync::Mutex<atropos_core::journal::Journal>>>,
 }
 
 impl Actions {
@@ -84,6 +135,12 @@ impl Actions {
             status: HashMap::new(),
             counts: HashMap::new(),
             toasts: Toasts::default(),
+            me: None,
+            elevated: None,
+            repaint: None,
+            grace: std::time::Duration::from_secs(5),
+            confirm: atropos_core::config::Confirm::Always,
+            journal: None,
         }
     }
 
@@ -103,15 +160,28 @@ impl Actions {
         {
             platform = platform.with_ctrl_c_helper(atr);
         }
-        let ctx = ctx.clone();
+        let repaint = ctx.clone();
+        // Every suspend (including the freeze inside a tree kill) is journaled first, so a crash
+        // can never leave a process frozen without a record.
+        let journal = std::sync::Arc::new(std::sync::Mutex::new(
+            atropos_core::journal::Journal::open(atropos_core::journal::path()),
+        ));
+        let platform = atropos_core::journal::JournaledPlatform::new(
+            platform,
+            std::sync::Arc::clone(&journal),
+        );
         let exec = executor::spawn(
             Box::new(platform),
             me,
-            Box::new(move || ctx.request_repaint_after(std::time::Duration::from_millis(1))),
+            Box::new(move || repaint.request_repaint_after(std::time::Duration::from_millis(1))),
         )
         .inspect_err(|e| tracing::error!("executor thread: {e}"))
         .ok();
-        Self::new(exec)
+        let mut a = Self::new(exec);
+        a.journal = Some(journal);
+        a.me = Some(me);
+        a.repaint = Some(ctx.clone());
+        a
     }
 
     fn send(&mut self, req: Request) {
@@ -157,6 +227,7 @@ impl Actions {
                     text: "Actions are unavailable (see the log)".to_owned(),
                     level: toast::Level::Error,
                     offer_admin: false,
+                    retry: None,
                 },
                 Instant::now(),
             );
@@ -176,23 +247,27 @@ impl Actions {
 
     /// Handles executor events.
     pub fn poll(&mut self, now: Instant) {
+        self.poll_elevated(now);
         let events: Vec<Event> = match &self.exec {
             Some(e) => e.events.try_iter().collect(),
             None => return,
         };
         for ev in events {
+            let retry = retry_for(&ev);
             match ev {
                 Event::Progress(key, p) => {
                     self.status.insert(key, toast::progress_text(&p));
                 }
                 Event::Killed(key, o) => {
                     self.status.remove(&key);
-                    let m = toast::outcome_message(&self.name(key), key.pid, o);
+                    let mut m = toast::outcome_message(&self.name(key), key.pid, o);
+                    m.retry.clone_from(&retry);
                     self.toasts.push(m, now);
                 }
                 Event::TreeKilled(key, r) => {
                     self.status.remove(&key);
-                    let m = toast::tree_message(&self.name(key), key.pid, &r);
+                    let mut m = toast::tree_message(&self.name(key), key.pid, &r);
+                    m.retry.clone_from(&retry);
                     self.toasts.push(m, now);
                 }
                 Event::Toggled {
@@ -208,7 +283,8 @@ impl Actions {
                             self.counts.insert(*k, *c);
                         }
                     }
-                    let m = toast::toggle_message(&self.name(key), key, suspend, &results);
+                    let mut m = toast::toggle_message(&self.name(key), key, suspend, &results);
+                    m.retry.clone_from(&retry);
                     self.toasts.push(m, now);
                 }
                 Event::Checked { key, kind, verdict } => {
@@ -218,13 +294,24 @@ impl Actions {
                         ActionKind::Suspend => Act::Suspend,
                         ActionKind::Resume => Act::Resume,
                     });
-                    match next_step(act, &verdict) {
+                    match next_step_with(act, &verdict, self.confirm) {
                         Next::Dialog(k) => self.dialog = Some(Dialog::new(key, k, verdict)),
-                        Next::Send => self.send(if act == Act::Resume {
-                            Request::Resume { key, tree: false }
-                        } else {
-                            Request::Suspend { key, tree: false }
-                        }),
+                        Next::Send => {
+                            let opts = KillOpts {
+                                grace: self.grace,
+                                force: false,
+                            };
+                            let req = match act {
+                                Act::Resume => Request::Resume { key, tree: false },
+                                Act::Suspend => Request::Suspend { key, tree: false },
+                                Act::Kill | Act::KillTree => Request::Kill {
+                                    key,
+                                    tree: act == Act::KillTree,
+                                    opts,
+                                },
+                            };
+                            self.send(req);
+                        }
                         Next::Refuse => {
                             let why = match &verdict {
                                 Verdict::Hard(h) => dialog::hard_text(h),
@@ -236,6 +323,7 @@ impl Actions {
                                     text,
                                     level: toast::Level::Warn,
                                     offer_admin: false,
+                                    retry: None,
                                 },
                                 now,
                             );
@@ -244,6 +332,117 @@ impl Actions {
                 }
             }
         }
+    }
+
+    /// What a previous run left suspended and is still the same process (PID not reused).
+    /// Stale entries are dropped from the journal.
+    #[must_use]
+    pub fn leftover_suspends(&self) -> Vec<(ProcKey, u32)> {
+        let Some(j) = &self.journal else {
+            return Vec::new();
+        };
+        let entries = j.lock().map(|j| j.entries()).unwrap_or_default();
+        let live = atropos_core::journal::resumable(&mut WindowsPlatform::new(), &entries);
+        if let Ok(mut j) = j.lock() {
+            for (k, _) in entries.iter().filter(|e| !live.contains(e)) {
+                j.forget(*k);
+            }
+        }
+        live
+    }
+
+    /// Resumes leftovers (`resume` = true) or forgets them (left suspended on purpose).
+    pub fn settle_leftovers(&mut self, items: &[(ProcKey, u32)], resume: bool) {
+        for &(key, n) in items {
+            if resume {
+                for _ in 0..n {
+                    self.send(Request::Resume { key, tree: false });
+                }
+            } else if let Some(j) = &self.journal {
+                if let Ok(mut j) = j.lock() {
+                    j.forget(key);
+                }
+            }
+        }
+    }
+
+    /// A one-line notice (e.g. a settings problem).
+    pub fn notice(&mut self, text: String, now: Instant) {
+        self.toast(text, toast::Level::Warn, now);
+    }
+
+    fn toast(&mut self, text: String, level: toast::Level, now: Instant) {
+        self.toasts.push(
+            toast::Message {
+                text,
+                level,
+                offer_admin: false,
+                retry: None,
+            },
+            now,
+        );
+    }
+
+    /// Results of "Retry as administrator".
+    fn poll_elevated(&mut self, now: Instant) {
+        use crate::elevate::ElevatedEvent;
+        use atropos_helper::protocol::Reply;
+        let events: Vec<ElevatedEvent> = match &self.elevated {
+            Some(e) => e.events.try_iter().collect(),
+            None => return,
+        };
+        for ev in events {
+            match ev {
+                ElevatedEvent::Done(key, Reply::Killed(o)) => {
+                    let m = toast::outcome_message(&self.name(key), key.pid, o);
+                    self.toast(format!("As administrator: {}", m.text), m.level, now);
+                }
+                ElevatedEvent::Done(key, Reply::Toggled(t)) => {
+                    let m = toast::toggle_message(&self.name(key), key, true, &[(key, t, 0)]);
+                    let level = m.level;
+                    let text = match t {
+                        atropos_core::engine::suspend::Toggle::Done => {
+                            format!("As administrator: {} ({}) done", self.name(key), key.pid)
+                        }
+                        _ => format!("As administrator: {}", m.text),
+                    };
+                    self.toast(text, level, now);
+                }
+                ElevatedEvent::Done(_, Reply::Rejected(r)) => {
+                    self.toast(
+                        format!("The elevated helper refused the request ({r:?})"),
+                        toast::Level::Error,
+                        now,
+                    );
+                }
+                ElevatedEvent::Failed(msg) => {
+                    self.toast(
+                        format!("Could not get administrator rights: {msg}"),
+                        toast::Level::Error,
+                        now,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Sends a retry to the elevated helper (started on first use: one UAC prompt).
+    fn elevate(&mut self, r: Retry) {
+        let Some(me) = self.me else {
+            return;
+        };
+        let el = self.elevated.get_or_insert_with(|| {
+            let ctx = self.repaint.clone();
+            crate::elevate::Elevated::spawn(
+                me,
+                Box::new(move || {
+                    if let Some(c) = &ctx {
+                        c.request_repaint_after(std::time::Duration::from_millis(1));
+                    }
+                }),
+            )
+        });
+        el.request(r);
     }
 
     /// Draws the dialog and toasts; sends the request when the user confirms.
@@ -256,17 +455,19 @@ impl Actions {
     ) {
         if let Some(d) = &mut self.dialog {
             if let Some(answer) = dialog::show(ctx, d, frame, today) {
-                let (key, kind) = (d.key, d.kind);
+                let (key, kind, console) = (d.key, d.kind, d.console);
                 self.dialog = None;
                 if let Answer::Confirm { force } = answer {
+                    let opts = KillOpts {
+                        force,
+                        grace: self.grace,
+                    };
                     let req = match kind {
+                        Kind::KillTree if console => Request::KillConsole { key, opts },
                         Kind::Kill | Kind::KillTree => Request::Kill {
                             key,
                             tree: kind == Kind::KillTree,
-                            opts: KillOpts {
-                                force,
-                                ..KillOpts::default()
-                            },
+                            opts,
                         },
                         Kind::Suspend => Request::Suspend { key, tree: false },
                     };
@@ -275,7 +476,9 @@ impl Actions {
                 }
             }
         }
-        self.toasts.show(ctx, now);
+        for r in self.toasts.show(ctx, now) {
+            self.elevate(r);
+        }
     }
 }
 
@@ -285,6 +488,75 @@ mod tests {
     use atropos_core::engine::policy::{HardReason, SoftReason};
     use atropos_core::platform::{FakePlatform, RawProc, Reaction};
     use std::time::Duration;
+
+    #[test]
+    fn denied_results_carry_a_retry() {
+        use atropos_core::engine::kill::Outcome;
+        use atropos_core::engine::subtree::TreeReport;
+        use atropos_core::engine::suspend::Toggle;
+        use atropos_helper::protocol::Op;
+        let k = |pid| ProcKey {
+            pid,
+            create_time: 1,
+        };
+        assert_eq!(
+            retry_for(&Event::Killed(k(1), Outcome::Denied)),
+            Some(Retry {
+                keys: vec![k(1)],
+                op: Op::GracefulClose
+            })
+        );
+        assert_eq!(retry_for(&Event::Killed(k(1), Outcome::Terminated)), None);
+        let report = TreeReport {
+            members: vec![
+                (k(1), Outcome::Terminated),
+                (k(2), Outcome::Denied),
+                (k(3), Outcome::Denied),
+            ],
+        };
+        assert_eq!(
+            retry_for(&Event::TreeKilled(k(1), report)),
+            Some(Retry {
+                keys: vec![k(2), k(3)],
+                op: Op::Terminate
+            })
+        );
+        let toggled = Event::Toggled {
+            key: k(1),
+            suspend: false,
+            results: vec![(k(1), Toggle::Denied, 0)],
+        };
+        assert_eq!(
+            retry_for(&toggled),
+            Some(Retry {
+                keys: vec![k(1)],
+                op: Op::Resume
+            })
+        );
+    }
+
+    #[test]
+    fn risky_only_policy_skips_the_dialog_for_allowed_kills() {
+        use atropos_core::config::Confirm;
+        let soft = Verdict::Soft(SoftReason::Shell("explorer.exe".into()));
+        let hard = Verdict::Hard(HardReason::SystemPid);
+        assert_eq!(
+            next_step_with(Act::Kill, &Verdict::Allowed, Confirm::Risky),
+            Next::Send
+        );
+        assert_eq!(
+            next_step_with(Act::KillTree, &soft, Confirm::Risky),
+            Next::Dialog(Kind::KillTree)
+        );
+        assert_eq!(
+            next_step_with(Act::Kill, &hard, Confirm::Risky),
+            Next::Dialog(Kind::Kill)
+        );
+        assert_eq!(
+            next_step_with(Act::Kill, &Verdict::Allowed, Confirm::Always),
+            Next::Dialog(Kind::Kill)
+        );
+    }
 
     #[test]
     fn decision_table() {

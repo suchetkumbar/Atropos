@@ -1,0 +1,49 @@
+name: Release
+
+# Runs when the maintainer pushes a tag like v0.1.0. Builds x64 + ARM64 zips and per-user MSIs,
+# renders the Scoop and winget manifests, and creates a DRAFT GitHub release: publishing it, and
+# submitting to winget / Scoop, stay manual (the maintainer's decision).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Install WiX (MSI builder)
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension list
+      - name: Tests
+        run: cargo test --workspace
+      - name: Check the tag matches Cargo.toml
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} != Cargo.toml version $v" }
+      - name: Package (zip + MSI, x64 + ARM64)
+        run: pwsh scripts/package.ps1 -Target x86_64-pc-windows-msvc,aarch64-pc-windows-msvc -Msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/*.zip
+            dist/*.msi
+            dist/SHA256SUMS
+            dist/atropos.json
+            dist/winget/*.yaml

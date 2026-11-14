@@ -6,13 +6,15 @@ use atropos_core::ProcKey;
 use atropos_core::engine::kill::{Outcome, Progress};
 use atropos_core::engine::subtree::TreeReport;
 use atropos_core::engine::suspend::Toggle;
+use atropos_helper::protocol::Op;
 use eframe::egui;
 
 /// How long a toast stays (errors stay longer).
 pub const LIFETIME: Duration = Duration::from_secs(5);
 pub const ERROR_LIFETIME: Duration = Duration::from_secs(10);
 pub const RETRY_ADMIN: &str = "Retry as administrator";
-pub const RETRY_ADMIN_TIP: &str = "Elevation arrives in Atropos v0.1 (Phase 3).";
+pub const RETRY_ADMIN_TIP: &str =
+    "Asks Windows for administrator rights (one UAC prompt) and tries again.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -25,8 +27,17 @@ pub enum Level {
 pub struct Message {
     pub text: String,
     pub level: Level,
-    /// Access was denied: offer elevation (disabled until Phase 3).
+    /// Access was denied: elevation would help.
     pub offer_admin: bool,
+    /// What "Retry as administrator" re-runs (button disabled while `None`).
+    pub retry: Option<Retry>,
+}
+
+/// Processes to retry through the elevated helper, and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retry {
+    pub keys: Vec<ProcKey>,
+    pub op: Op,
 }
 
 fn msg(text: String, level: Level) -> Message {
@@ -34,6 +45,7 @@ fn msg(text: String, level: Level) -> Message {
         text,
         level,
         offer_admin: false,
+        retry: None,
     }
 }
 
@@ -63,6 +75,7 @@ pub fn outcome_message(image: &str, pid: u32, o: Outcome) -> Message {
             text: format!("{who}: access denied"),
             level: Level::Error,
             offer_admin: true,
+            retry: None,
         },
     }
 }
@@ -82,6 +95,7 @@ pub fn tree_message(image: &str, pid: u32, r: &TreeReport) -> Message {
         text: format!("{image} ({pid}) tree: {}", r.summary()),
         level,
         offer_admin: r.count(Outcome::Denied) > 0,
+        retry: None,
     }
 }
 
@@ -102,6 +116,7 @@ pub fn toggle_message(
             text: format!("{who}: access denied ({denied} not {verb})"),
             level: Level::Error,
             offer_admin: true,
+            retry: None,
         };
     }
     if failed(Toggle::Protected) > 0 {
@@ -157,7 +172,8 @@ impl Toasts {
     }
 
     /// Draws live toasts and drops expired ones; asks for a repaint when the next one expires.
-    pub fn show(&mut self, ctx: &egui::Context, now: Instant) {
+    /// Returns the retries the user clicked (their toasts close).
+    pub fn show(&mut self, ctx: &egui::Context, now: Instant) -> Vec<Retry> {
         self.items
             .retain(|t| now.saturating_duration_since(t.born) < t.lifetime());
         let Some(next) = self
@@ -169,13 +185,14 @@ impl Toasts {
             })
             .min()
         else {
-            return;
+            return Vec::new();
         };
         ctx.request_repaint_after(next);
+        let mut clicked: Vec<usize> = Vec::new();
         egui::Area::new(egui::Id::new("atropos-toasts"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
             .show(ctx, |ui| {
-                for t in &self.items {
+                for (i, t) in self.items.iter().enumerate() {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         let color = match t.msg.level {
                             Level::Ok => ui.visuals().text_color(),
@@ -184,13 +201,27 @@ impl Toasts {
                         };
                         ui.colored_label(color, &t.msg.text);
                         if t.msg.offer_admin {
-                            ui.add_enabled(false, egui::Button::new(RETRY_ADMIN))
-                                .on_disabled_hover_text(RETRY_ADMIN_TIP);
+                            let enabled = t.msg.retry.is_some();
+                            if ui
+                                .add_enabled(enabled, egui::Button::new(RETRY_ADMIN))
+                                .on_hover_text(RETRY_ADMIN_TIP)
+                                .on_disabled_hover_text("Nothing to retry for this result")
+                                .clicked()
+                            {
+                                clicked.push(i);
+                            }
                         }
                     });
                     ui.add_space(4.0);
                 }
             });
+        let mut out = Vec::new();
+        for i in clicked.into_iter().rev() {
+            if let Some(r) = self.items.remove(i).msg.retry {
+                out.push(r);
+            }
+        }
+        out
     }
 }
 
@@ -263,19 +294,51 @@ mod tests {
     }
 
     #[test]
-    fn denied_toast_offers_a_disabled_retry_as_administrator() {
-        let mut h = Harness::new_state(|ctx, t: &mut Toasts| t.show(ctx, Instant::now()), {
-            let mut t = Toasts::default();
-            t.push(
-                outcome_message("svc.exe", 7, Outcome::Denied),
-                Instant::now(),
-            );
-            t
-        });
+    fn denied_toast_without_a_retry_shows_the_button_disabled() {
+        let mut h = Harness::new_state(
+            |ctx, t: &mut Toasts| {
+                t.show(ctx, Instant::now());
+            },
+            {
+                let mut t = Toasts::default();
+                t.push(
+                    outcome_message("svc.exe", 7, Outcome::Denied),
+                    Instant::now(),
+                );
+                t
+            },
+        );
         h.run();
         assert!(h.query_by_label_contains("access denied").is_some());
-        let retry = h.get_by_label(RETRY_ADMIN);
-        assert!(retry.accesskit_node().is_disabled());
+        assert!(h.get_by_label(RETRY_ADMIN).accesskit_node().is_disabled());
+    }
+
+    #[test]
+    fn retry_as_administrator_is_clickable_and_reported() {
+        let retry = Retry {
+            keys: vec![k(7)],
+            op: Op::GracefulClose,
+        };
+        let mut msg = outcome_message("svc.exe", 7, Outcome::Denied);
+        msg.retry = Some(retry.clone());
+        let mut h = Harness::new_state(
+            |ctx, s: &mut (Toasts, Vec<Retry>)| {
+                let clicked = s.0.show(ctx, Instant::now());
+                s.1.extend(clicked);
+            },
+            {
+                let mut t = Toasts::default();
+                t.push(msg, Instant::now());
+                (t, Vec::new())
+            },
+        );
+        h.run();
+        let b = h.get_by_label(RETRY_ADMIN);
+        assert!(!b.accesskit_node().is_disabled());
+        b.click();
+        h.run();
+        assert_eq!(h.state().1, vec![retry]);
+        assert_eq!(h.state().0.len(), 0, "the toast closes once clicked");
     }
 
     #[test]
@@ -286,7 +349,7 @@ mod tests {
         toasts.push(outcome_message("b.exe", 2, Outcome::Stuck), t0);
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            toasts.show(ctx, t0 + LIFETIME + D::from_millis(1));
+            let _ = toasts.show(ctx, t0 + LIFETIME + D::from_millis(1));
         });
         assert_eq!(toasts.len(), 1, "the error toast stays longer");
     }

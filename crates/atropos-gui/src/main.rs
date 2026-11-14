@@ -9,8 +9,10 @@ compile_error!("enable one of `renderer-glow` / `renderer-wgpu`");
 mod actions;
 mod app;
 mod args;
+mod crash;
 mod details;
 mod dialog;
+mod elevate;
 mod fatal;
 mod format;
 mod header;
@@ -18,6 +20,7 @@ mod icon;
 mod keys;
 mod logging;
 mod selection;
+mod settings;
 mod startup;
 mod table;
 #[cfg(test)]
@@ -38,6 +41,15 @@ const RENDERER: (eframe::Renderer, &str) = (eframe::Renderer::Glow, "OpenGL (glo
 const RENDERER: (eframe::Renderer, &str) = (eframe::Renderer::Wgpu, "wgpu");
 
 fn main() -> std::process::ExitCode {
+    // Elevation helper mode (spec §4.7): no window, serve the pipe, exit when idle.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("--elevated-helper") {
+        let _log_guard = logging::init().ok();
+        return match atropos_helper::host::parse_args(&raw) {
+            Some(a) => atropos_helper::host::run(&a),
+            None => std::process::ExitCode::from(2),
+        };
+    }
     // Read our own identity first so startup timing is measured from process creation.
     let create_time =
         atropos_core::platform::windows::current_process_key().map_or(0, |k| k.create_time);

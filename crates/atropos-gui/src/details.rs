@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use atropos_core::collector::Frame;
 use atropos_core::platform::ProcEnv;
 use atropos_core::platform::windows::LocalTime;
-use atropos_core::secrets::{Masked, mask};
+use atropos_core::secrets::{Masked, mask_with};
 use atropos_core::statics::Protection;
 use atropos_core::{Field, ProcKey};
 use eframe::egui::{self, RichText};
@@ -160,7 +160,12 @@ pub fn parent_chain(frame: &Frame, key: ProcKey) -> String {
     chain.join(" › ")
 }
 
-fn environment(ui: &mut egui::Ui, env: Option<&Field<ProcEnv>>, revealed: &mut HashSet<String>) {
+fn environment(
+    ui: &mut egui::Ui,
+    env: Option<&Field<ProcEnv>>,
+    revealed: &mut HashSet<String>,
+    extra_mask: &[String],
+) {
     let e = match env {
         None => {
             ui.label("Reading…");
@@ -187,7 +192,8 @@ fn environment(ui: &mut egui::Ui, env: Option<&Field<ProcEnv>>, revealed: &mut H
         .show(ui, |ui| {
             for (name, value) in &e.vars {
                 ui.label(RichText::new(name).monospace());
-                let hidden = mask(name, value) == Masked::Hidden && !revealed.contains(name);
+                let hidden = mask_with(name, value, extra_mask) == Masked::Hidden
+                    && !revealed.contains(name);
                 if hidden {
                     ui.horizontal(|ui| {
                         ui.label(MASK)
@@ -254,6 +260,7 @@ pub fn show(
     key: ProcKey,
     state: &mut DetailsState,
     today: Option<LocalTime>,
+    extra_mask: &[String],
 ) -> Option<DetailEvent> {
     if state.for_key != Some(key) {
         state.revealed.clear();
@@ -279,7 +286,7 @@ pub fn show(
                 .as_ref()
                 .filter(|(k, _)| *k == key)
                 .map(|(_, e)| &**e);
-            environment(ui, env, &mut state.revealed);
+            environment(ui, env, &mut state.revealed, extra_mask);
         }
         Tab::Ports => ports_tab(ui, frame, key),
     });
@@ -323,7 +330,7 @@ mod tests {
         };
         Harness::new_ui_state(
             |ui, (f, st): &mut (Frame, DetailsState)| {
-                show(ui, f, k(2), st, None);
+                show(ui, f, k(2), st, None, &[]);
             },
             (f, state),
         )
@@ -383,7 +390,7 @@ mod tests {
         };
         Harness::new_ui_state(
             move |ui, (f, st): &mut (Frame, DetailsState)| {
-                show(ui, f, key, st, None);
+                show(ui, f, key, st, None, &[]);
             },
             (f, state),
         )
@@ -424,7 +431,7 @@ mod tests {
         let f = frame();
         let mut h = Harness::new_ui_state(
             |ui, st: &mut DetailsState| {
-                show(ui, &f, k(3), st, None);
+                show(ui, &f, k(3), st, None, &[]);
             },
             st,
         );

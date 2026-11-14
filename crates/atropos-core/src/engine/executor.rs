@@ -35,6 +35,11 @@ pub enum Request {
         key: ProcKey,
         tree: bool,
     },
+    /// End every process started from the target's terminal window (spec §4.6).
+    KillConsole {
+        key: ProcKey,
+        opts: KillOpts,
+    },
     /// Policy pre-check for the confirmation dialog (answers with `Event::Checked`).
     Check {
         key: ProcKey,
@@ -49,7 +54,8 @@ impl Request {
             Request::Kill { key, .. }
             | Request::Suspend { key, .. }
             | Request::Resume { key, .. }
-            | Request::Check { key, .. } => key,
+            | Request::Check { key, .. }
+            | Request::KillConsole { key, .. } => key,
         }
     }
 }
@@ -83,6 +89,37 @@ fn fresh(platform: &mut dyn Platform) -> Snapshot {
     }
 }
 
+/// Ends every process on `key`'s console except its ancestors and Atropos (spec §4.6).
+fn kill_console(
+    platform: &mut dyn Platform,
+    snap: &Snapshot,
+    key: ProcKey,
+    me: ProcKey,
+    opts: KillOpts,
+    blocked: &dyn Fn(ProcKey) -> bool,
+    emit: &mut dyn FnMut(Event),
+) -> TreeReport {
+    let pids = platform
+        .console_processes(key)
+        .unwrap_or_else(|_| vec![key.pid]);
+    let roots: Vec<ProcKey> = super::subtree::console_roots(snap, key, &pids)
+        .into_iter()
+        .filter(|k| *k != me)
+        .collect();
+    let mut all = TreeReport::default();
+    for root in roots {
+        let r = kill_tree(platform, root, opts, blocked, &mut |p| {
+            emit(Event::Progress(key, p));
+        });
+        for m in r.members {
+            if !all.members.iter().any(|(k, _)| *k == m.0) {
+                all.members.push(m);
+            }
+        }
+    }
+    all
+}
+
 /// Runs one request to completion, emitting progress and exactly one final event.
 pub fn handle(
     platform: &mut dyn Platform,
@@ -106,6 +143,7 @@ pub fn handle(
         Request::Suspend { tree, .. } => (ActionKind::Suspend, tree),
         Request::Resume { tree, .. } => (ActionKind::Resume, tree),
         Request::Check { kind, .. } => (kind, kind == ActionKind::KillTree),
+        Request::KillConsole { .. } => (ActionKind::KillTree, true),
     };
     // Protection status needs statics; read them for the target (and its subtree) only.
     let keys: Vec<ProcKey> = match snap.index.get(&key) {
@@ -138,6 +176,10 @@ pub fn handle(
             .unwrap_or_else(|| matches!(policy::check(&ctx, k, kind), Verdict::Hard(_)))
     };
     match req {
+        Request::KillConsole { opts, .. } => {
+            let report = kill_console(platform, &snap, key, me, opts, &blocked, emit);
+            emit(Event::TreeKilled(key, report));
+        }
         Request::Check { kind, .. } => {
             let verdict = policy::check(&ctx, key, kind);
             emit(Event::Checked { key, kind, verdict });
@@ -361,6 +403,39 @@ mod tests {
                 suspend: false,
                 results: vec![(k(10), Toggle::Done, 1)]
             })
+        );
+    }
+
+    #[test]
+    fn console_scope_ends_the_window_but_not_the_shell_or_atropos() {
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![
+            RawProc::new(k(1), 0, "WindowsTerminal.exe"),
+            RawProc::new(k(5), 1, "pwsh.exe"),
+            RawProc::new(k(10), 5, "node.exe"),
+            RawProc::new(k(11), 10, "node.exe"),
+            RawProc::new(k(12), 1, "node.exe"),
+            RawProc::new(ME, 1, "Atropos.exe"),
+        ]);
+        f.set_console(k(10), vec![5, 10, 11, 12, 3]);
+        let ev = run(
+            &mut f,
+            Request::KillConsole {
+                key: k(10),
+                opts: KillOpts::default(),
+            },
+        );
+        let Some(Event::TreeKilled(key, report)) = ev.last() else {
+            panic!("{ev:?}");
+        };
+        assert_eq!(*key, k(10));
+        let ended: Vec<u32> = report.members.iter().map(|(k, _)| k.pid).collect();
+        assert_eq!(ended, [10, 11, 12]);
+        assert!(
+            report
+                .members
+                .iter()
+                .all(|(_, o)| *o == Outcome::Terminated)
         );
     }
 

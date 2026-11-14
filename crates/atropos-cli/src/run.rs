@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use atropos_core::ProcKey;
 use atropos_core::engine::kill::{KillOpts, Outcome, kill};
 use atropos_core::engine::policy::{self, ActionKind, Context, HardReason, SoftReason, Verdict};
-use atropos_core::engine::subtree::{kill_tree, preorder};
+use atropos_core::engine::subtree::{console_roots, kill_tree, preorder};
 use atropos_core::filter::{Filter, FilterMatcher, Subject};
 use atropos_core::pin::Access;
 use atropos_core::platform::Platform;
@@ -35,6 +35,8 @@ pub struct Env<'a> {
 #[allow(clippy::struct_excessive_bools)] // independent CLI flags
 pub struct KillArgs {
     pub tree: bool,
+    /// End every process started from the target's terminal window (implies `tree`).
+    pub console: bool,
     pub force: bool,
     pub grace: Duration,
     pub yes: bool,
@@ -45,6 +47,7 @@ impl Default for KillArgs {
     fn default() -> Self {
         Self {
             tree: false,
+            console: false,
             force: false,
             grace: Duration::from_secs(5),
             yes: false,
@@ -330,6 +333,25 @@ fn act(
     targets: &[ProcKey],
     args: KillArgs,
 ) -> Option<(Vec<ResultOut>, u8)> {
+    // Terminal-window scope: the console's processes minus the shell they were started from.
+    let (targets, args): (Vec<ProcKey>, KillArgs) = if args.console {
+        let mut v = Vec::new();
+        for &t in targets {
+            let pids = env
+                .platform
+                .console_processes(t)
+                .unwrap_or_else(|_| vec![t.pid]);
+            for r in console_roots(snap, t, &pids) {
+                if r != env.me && !v.contains(&r) {
+                    v.push(r);
+                }
+            }
+        }
+        (v, KillArgs { tree: true, ..args })
+    } else {
+        (targets.to_vec(), args)
+    };
+    let targets = targets.as_slice();
     let kind = if args.tree {
         ActionKind::KillTree
     } else {
@@ -921,6 +943,37 @@ mod tests {
             r.out
         );
         assert_eq!(r.code, 2);
+    }
+
+    #[test]
+    fn console_scope_keeps_the_shell() {
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![
+            RawProc::new(ME, 1, "atr.exe"),
+            RawProc::new(k(5), 1, "pwsh.exe"),
+            RawProc::new(k(10), 5, "node.exe"),
+            RawProc::new(k(11), 10, "node.exe"),
+            RawProc::new(k(12), 1, "node.exe"),
+        ]);
+        f.set_console(k(10), vec![5, 10, 11, 12, 3]);
+        let args = KillArgs {
+            console: true,
+            ..yes()
+        };
+        let r = run(&mut f, true, false, |e| kill_cmd(e, "10", args));
+        assert_eq!(r.code, 0, "{}", r.out);
+        for pid in [10, 11, 12] {
+            assert!(
+                r.out.contains(&format!("\"pid\":{pid},")),
+                "{pid}: {}",
+                r.out
+            );
+        }
+        assert!(
+            !r.out.contains("\"pid\":5,") && !r.out.contains("\"pid\":3,"),
+            "{}",
+            r.out
+        );
     }
 
     #[test]

@@ -335,7 +335,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atropos-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atropos-core",
@@ -347,12 +347,14 @@ dependencies = [
 
 [[package]]
 name = "atropos-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "nucleo-matcher",
  "proptest",
+ "serde",
  "thiserror 2.0.21",
+ "toml",
  "tracing",
  "windows 0.62.2",
  "windows-link 0.2.1",
@@ -360,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "atropos-fixtures"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atropos-core",
@@ -368,10 +370,12 @@ dependencies = [
 
 [[package]]
 name = "atropos-gui"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atropos-core",
+ "atropos-helper",
+ "crossbeam-channel",
  "eframe",
  "egui_extras",
  "egui_kittest",
@@ -380,6 +384,15 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "wgpu",
+]
+
+[[package]]
+name = "atropos-helper"
+version = "0.1.0"
+dependencies = [
+ "atropos-core",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

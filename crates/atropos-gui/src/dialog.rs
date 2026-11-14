@@ -24,8 +24,13 @@ pub struct Dialog {
     pub key: ProcKey,
     pub kind: Kind,
     pub verdict: Verdict,
+    /// Tree kills: end every process started from the same terminal window instead.
+    pub console: bool,
     typed: String,
 }
+
+/// Checkbox text for the terminal-window scope (spec §4.6).
+pub const CONSOLE_SCOPE: &str = "All processes from this terminal window";
 
 impl Dialog {
     #[must_use]
@@ -34,6 +39,7 @@ impl Dialog {
             key,
             kind,
             verdict,
+            console: false,
             typed: String::new(),
         }
     }
@@ -137,6 +143,9 @@ pub fn show(
         if let Some(p) = p {
             if tree {
                 ui.label(format!("{} processes in this tree", p.rollup.count));
+                ui.checkbox(&mut d.console, CONSOLE_SCOPE).on_hover_text(
+                    "Also ends workers that left the tree but share its console.                      The shell it was started from is kept.",
+                );
             }
             let mem = if tree {
                 p.rollup.private_ws
@@ -276,6 +285,19 @@ mod tests {
         h.key_press(Key::Enter);
         h.run();
         assert_eq!(h.state().answer, Some(Answer::Confirm { force: false }));
+    }
+
+    #[test]
+    fn tree_dialog_offers_the_terminal_window_scope() {
+        let mut h = harness(Dialog::new(k(2), Kind::KillTree, Verdict::Allowed));
+        h.run();
+        assert!(!h.state().d.console);
+        h.get_by_label(CONSOLE_SCOPE).click();
+        h.run();
+        assert!(h.state().d.console);
+        let mut single = harness(Dialog::new(k(2), Kind::Kill, Verdict::Allowed));
+        single.run();
+        assert!(single.query_by_label(CONSOLE_SCOPE).is_none());
     }
 
     #[test]

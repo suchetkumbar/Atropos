@@ -5,10 +5,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod collector;
+pub mod config;
 pub mod cpu;
 pub mod engine;
 pub mod error;
 pub mod filter;
+pub mod journal;
 pub mod model;
 pub mod paths;
 pub mod pin;

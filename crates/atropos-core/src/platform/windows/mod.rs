@@ -10,6 +10,7 @@ mod job;
 mod net;
 mod peb;
 mod pin;
+pub mod pipe;
 mod process;
 mod scan;
 mod services;

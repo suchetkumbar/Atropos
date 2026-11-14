@@ -19,9 +19,11 @@ use crate::details::{self, DetailEvent, DetailsState};
 use crate::header;
 use crate::keys::{self, Action};
 use crate::selection::{OrderFreeze, Selection};
+use crate::settings::{self, SettingsUi};
 use crate::startup;
 use crate::table::{self, Event, Look};
 use crate::view::{self, Row, Sort, SortKey, ViewOpts};
+use atropos_core::config::{self, Config, View};
 
 const SEARCH_HINT: &str = "Search   :3000   pid:123   user:me   name:node   cwd:shop";
 
@@ -55,6 +57,10 @@ pub struct AtroposApp {
     pointer_on_table: bool,
     perf_log: Option<std::fs::File>,
     actions: Actions,
+    config: Config,
+    settings: SettingsUi,
+    /// Processes a crashed previous run left suspended (asked once at start).
+    resume_offer: Option<crate::crash::ResumeOffer>,
 }
 
 impl AtroposApp {
@@ -76,7 +82,36 @@ impl AtroposApp {
                 .ok()
         });
         let self_key = current_process_key().ok();
-        let actions = Actions::spawn(&cc.egui_ctx, self_key);
+        let mut actions = Actions::spawn(&cc.egui_ctx, self_key);
+        let (config, notice) = config::load(&config::path());
+        if let Some(n) = notice {
+            tracing::warn!("{n}");
+            actions.notice(n, Instant::now());
+        }
+        cc.egui_ctx.set_theme(settings::theme(config.theme));
+        actions.grace = std::time::Duration::from_secs(u64::from(config.grace_secs));
+        actions.confirm = config.confirm;
+        let leftovers = actions.leftover_suspends();
+        let resume_offer = (!leftovers.is_empty()).then(|| {
+            let mut raw = Vec::new();
+            let _ = atropos_core::platform::Platform::scan(&mut WindowsPlatform::new(), &mut raw);
+            crate::crash::ResumeOffer {
+                items: leftovers
+                    .iter()
+                    .map(|(k, n)| {
+                        let name = raw
+                            .iter()
+                            .find(|r| r.key == *k)
+                            .map_or_else(|| "process".to_owned(), |r| r.image.to_string());
+                        (*k, *n, name)
+                    })
+                    .collect(),
+            }
+        });
+        let opts = ViewOpts {
+            tree: config.default_view == View::Tree,
+            ..ViewOpts::default()
+        };
         Self {
             args,
             create_time,
@@ -89,7 +124,7 @@ impl AtroposApp {
             search: String::new(),
             filter: Filter::default(),
             matcher: FilterMatcher::default(),
-            opts: ViewOpts::default(),
+            opts,
             selection: Selection::default(),
             details: DetailsState::default(),
             keys: KeyState::default(),
@@ -99,6 +134,9 @@ impl AtroposApp {
             pointer_on_table: false,
             perf_log,
             actions,
+            config,
+            settings: SettingsUi::default(),
+            resume_offer,
         }
     }
 
@@ -148,6 +186,10 @@ impl AtroposApp {
         let want = Interest {
             visibility,
             selected: self.selection.0,
+            tick_override: self
+                .config
+                .tick_secs
+                .map(|s| std::time::Duration::from_secs_f32(s.clamp(0.5, 10.0))),
             want_ports: self.filter.has_port_term()
                 || (self.details.open && self.details.tab == details::Tab::Ports),
             ..Interest::default()
@@ -267,6 +309,9 @@ impl AtroposApp {
                 {
                     self.keys.help = !self.keys.help;
                 }
+                if ui.small_button("⚙").on_hover_text("Settings").clicked() {
+                    self.settings.open = !self.settings.open;
+                }
                 if let Some(f) = &self.frame {
                     ui.label(format!(
                         "{} of {} processes",
@@ -341,6 +386,17 @@ impl AtroposApp {
         refresh
     }
 
+    /// Applies and saves changed settings (the file is created only now, Z3).
+    fn apply_settings(&mut self, ctx: &egui::Context, now: Instant) {
+        ctx.set_theme(settings::theme(self.config.theme));
+        self.actions.grace = std::time::Duration::from_secs(u64::from(self.config.grace_secs));
+        self.actions.confirm = self.config.confirm;
+        if let Err(e) = config::save(&config::path(), &self.config) {
+            self.actions
+                .notice(format!("Could not save settings: {e}"), now);
+        }
+    }
+
     fn on_first_frame(&mut self, ctx: &egui::Context) {
         self.first_frame_done = true;
         let ms = startup::elapsed_ms(self.create_time, now_filetime());
@@ -399,7 +455,14 @@ impl eframe::App for AtroposApp {
                 .resizable(true)
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    let ev = details::show(ui, &f, key, &mut self.details, today);
+                    let ev = details::show(
+                        ui,
+                        &f,
+                        key,
+                        &mut self.details,
+                        today,
+                        &self.config.mask_names,
+                    );
                     close |= ev == Some(DetailEvent::Close);
                 });
             if close {
@@ -438,6 +501,18 @@ impl eframe::App for AtroposApp {
         });
         if let Some(f) = self.frame.clone() {
             self.actions.show(ctx, &f, today, now);
+        }
+        if let Some(offer) = &self.resume_offer {
+            if let Some(choice) = crate::crash::show(ctx, offer) {
+                let items: Vec<(ProcKey, u32)> =
+                    offer.items.iter().map(|(k, n, _)| (*k, *n)).collect();
+                self.actions
+                    .settle_leftovers(&items, choice == crate::crash::Choice::ResumeAll);
+                self.resume_offer = None;
+            }
+        }
+        if self.settings.open && settings::show(ctx, &mut self.settings, &mut self.config) {
+            self.apply_settings(ctx, now);
         }
         if self.dirty {
             // A view change made this frame: show it now rather than at the next tick.

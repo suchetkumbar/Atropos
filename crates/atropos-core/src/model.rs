@@ -5,7 +5,7 @@ use std::fmt;
 /// Stable identity of a process: PID plus creation time (FILETIME, 100 ns since 1601 UTC).
 ///
 /// A PID alone is never used to act on a process: PIDs are reused, `(pid, create_time)` is not.
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 pub struct ProcKey {
     pub pid: u32,
     pub create_time: u64,

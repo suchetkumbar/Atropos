@@ -22,7 +22,9 @@ renderer-wgpu = ["eframe/wgpu", "dep:wgpu"]
 
 [dependencies]
 anyhow = "1.0.104"
+crossbeam-channel = "0.5"
 atropos-core = { path = "../atropos-core" }
+atropos-helper = { path = "../atropos-helper" }
 eframe = { version = "0.32.3", default-features = false, features = ["default_fonts"] }
 egui_extras = { version = "0.32.3", default-features = false }
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12", "wgsl"], optional = true }

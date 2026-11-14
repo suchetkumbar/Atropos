@@ -38,6 +38,20 @@ pub fn mask(name: &str, value: &str) -> Masked {
     }
 }
 
+/// Like [`mask`], with extra name fragments (case-insensitive) from the settings.
+#[must_use]
+pub fn mask_with(name: &str, value: &str, extra: &[String]) -> Masked {
+    let upper = name.to_uppercase();
+    let extra_hit = extra
+        .iter()
+        .any(|e| !e.is_empty() && upper.contains(&e.to_uppercase()));
+    if extra_hit {
+        Masked::Hidden
+    } else {
+        mask(name, value)
+    }
+}
+
 /// `eyJ…`.`…`.`…`: three non-empty base64url segments, the header starting with `{"`.
 fn looks_like_jwt(v: &str) -> bool {
     let mut parts = v.split('.');
@@ -92,6 +106,14 @@ mod tests {
         ] {
             assert_eq!(mask("SOMETHING", value), Masked::Hidden, "{value}");
         }
+    }
+
+    #[test]
+    fn extra_names_from_settings_also_mask() {
+        let extra = vec!["internal".to_owned()];
+        assert_eq!(mask_with("MY_INTERNAL_URL", "x", &extra), Masked::Hidden);
+        assert_eq!(mask_with("PORT", "3000", &extra), Masked::Shown);
+        assert_eq!(mask_with("API_KEY", "x", &[]), Masked::Hidden);
     }
 
     #[test]

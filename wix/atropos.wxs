@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Atropos per-user MSI (WiX v4+ schema; build with `wix build`, see scripts/package.ps1).
+  Per-user: installs to %LOCALAPPDATA%\Programs\Atropos with no UAC prompt (Z8), adds that folder
+  to the *user* PATH so `atr` works in new terminals, and a Start-menu shortcut. The only registry
+  writes are under HKCU\Software\Atropos (component key paths). Uninstall removes binaries,
+  shortcut and the PATH entry; the user's settings and logs stay (documented).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Atropos"
+      Manufacturer="The Atropos contributors"
+      Version="$(var.Version)"
+      UpgradeCode="{EFB61A44-8E39-43B9-991F-E9F6A9DEF70F}"
+      Scope="perUser"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="Atropos: cut the right thread" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Atropos is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="$(var.AssetsDir)\atropos.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/suchetkumbar/Atropos" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Atropos" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <ComponentGroup Id="AtroposFiles" Directory="INSTALLFOLDER">
+      <Component Id="GuiExe" Guid="{6F0B7C2E-3A1D-4E59-9B7A-2D1C5E8F4A01}">
+        <RegistryValue Root="HKCU" Key="Software\Atropos\Install" Name="gui" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="AtroposExe" Source="$(var.BinDir)\Atropos.exe" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsDir" Directory="ProgramsDir" On="uninstall" />
+      </Component>
+      <Component Id="CliExe" Guid="{6F0B7C2E-3A1D-4E59-9B7A-2D1C5E8F4A02}">
+        <RegistryValue Root="HKCU" Key="Software\Atropos\Install" Name="cli" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="AtrExe" Source="$(var.BinDir)\atr.exe" />
+      </Component>
+      <Component Id="Licenses" Guid="{6F0B7C2E-3A1D-4E59-9B7A-2D1C5E8F4A03}">
+        <RegistryValue Root="HKCU" Key="Software\Atropos\Install" Name="licenses" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="LicenseMit" Source="$(var.RootDir)\LICENSE-MIT" />
+        <File Id="LicenseApache" Source="$(var.RootDir)\LICENSE-APACHE" />
+      </Component>
+      <Component Id="UserPath" Guid="{6F0B7C2E-3A1D-4E59-9B7A-2D1C5E8F4A04}">
+        <RegistryValue Root="HKCU" Key="Software\Atropos\Install" Name="path" Type="integer" Value="1" KeyPath="yes" />
+        <Environment Id="AtroposOnPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="no" Permanent="no" />
+      </Component>
+      <Component Id="StartMenuShortcut" Guid="{6F0B7C2E-3A1D-4E59-9B7A-2D1C5E8F4A05}">
+        <RegistryValue Root="HKCU" Key="Software\Atropos\Install" Name="shortcut" Type="integer" Value="1" KeyPath="yes" />
+        <Shortcut Id="AtroposShortcut" Directory="ProgramMenuFolder" Name="Atropos"
+                  Description="Cut the right thread" Target="[INSTALLFOLDER]Atropos.exe"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Atropos" Level="1">
+      <ComponentGroupRef Id="AtroposFiles" />
+    </Feature>
+  </Package>
+</Wix>

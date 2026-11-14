@@ -67,6 +67,30 @@ impl Member {
     }
 }
 
+/// "All processes started from this terminal window" (spec §4.6): the console's PIDs mapped to
+/// keys, minus `target`'s ancestors (the shell it was started from survives). Top-level members
+/// (no member parent) first, in console order; each is then ended as a tree.
+#[must_use]
+pub fn console_roots(snap: &Snapshot, target: ProcKey, console_pids: &[u32]) -> Vec<ProcKey> {
+    let mut ancestors = HashSet::new();
+    let mut up = snap.index.get(&target).and_then(|&i| snap.procs[i].parent);
+    while let Some(i) = up {
+        ancestors.insert(snap.procs[i].raw.key);
+        up = snap.procs[i].parent;
+    }
+    let members: Vec<usize> = console_pids
+        .iter()
+        .filter_map(|pid| snap.procs.iter().position(|p| p.raw.key.pid == *pid))
+        .filter(|&i| !ancestors.contains(&snap.procs[i].raw.key))
+        .collect();
+    let set: HashSet<usize> = members.iter().copied().collect();
+    members
+        .into_iter()
+        .filter(|&i| !snap.procs[i].parent.is_some_and(|p| set.contains(&p)))
+        .map(|i| snap.procs[i].raw.key)
+        .collect()
+}
+
 /// Pre-order (parents first) keys of the subtree at `root`.
 #[must_use]
 pub fn preorder(snap: &Snapshot, root: usize) -> Vec<ProcKey> {
@@ -437,6 +461,26 @@ mod tests {
         let r = kill_tree(&mut f, k(10), force(), &|_| false, &mut |_| {});
         assert_eq!(r.members[1], (k(11), Outcome::Denied));
         assert_eq!(r.summary(), "0 exited · 1 terminated · 0 stuck · 1 denied");
+    }
+
+    #[test]
+    fn console_roots_skip_the_shell_and_nested_members() {
+        // terminal(1) → shell(5) → target(10) → child(11); worker(12) re-parented to 1.
+        let f = {
+            let mut f = FakePlatform::new(1);
+            f.push_frame(vec![p(1, 0), p(5, 1), p(10, 5), p(11, 10), p(12, 1)]);
+            f
+        };
+        let mut f = f;
+        let mut raw = Vec::new();
+        let stats = f.scan(&mut raw).unwrap();
+        let snap = build(None, raw, stats);
+        let roots = console_roots(&snap, k(10), &[5, 10, 11, 12, 999]);
+        assert_eq!(
+            roots,
+            vec![k(10), k(12)],
+            "shell 5 kept, child 11 covered by its tree, 999 unknown"
+        );
     }
 
     #[test]

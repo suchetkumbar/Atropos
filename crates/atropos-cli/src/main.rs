@@ -28,6 +28,9 @@ struct KillFlags {
     /// Also end every descendant (race-free subtree kill).
     #[arg(long)]
     tree: bool,
+    /// End every process started from the target's terminal window (keeps the shell).
+    #[arg(long)]
+    console: bool,
     /// Skip the graceful request and terminate right away.
     #[arg(long)]
     force: bool,
@@ -46,6 +49,7 @@ impl From<KillFlags> for KillArgs {
     fn from(f: KillFlags) -> Self {
         KillArgs {
             tree: f.tree,
+            console: f.console,
             force: f.force,
             grace: f.grace,
             yes: f.yes,

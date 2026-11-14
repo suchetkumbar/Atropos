@@ -1,0 +1,17 @@
+[package]
+name = "atropos-helper"
+description = "Atropos elevation helper: a short-lived, locked-down named-pipe server (spec §4.7)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+atropos-core = { path = "../atropos-core" }
+thiserror = "2.0.21"
+tracing = "0.1.44"

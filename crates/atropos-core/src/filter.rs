@@ -14,6 +14,8 @@ pub enum Term {
     Name(String),
     /// Case-insensitive substring of the working directory (ignored while the cwd is unknown).
     Cwd(String),
+    /// `:3000`: owns a socket on that local port (TCP or UDP).
+    Port(u16),
     /// Free text (fuzzy).
     Text(String),
 }
@@ -27,6 +29,9 @@ pub struct Subject<'a> {
     pub cmdline: Option<&'a str>,
     pub user: Option<&'a str>,
     pub cwd: Option<&'a str>,
+    /// Local ports this process owns; `None` while sockets are not loaded (a port term then
+    /// matches nothing rather than everything).
+    pub ports: Option<&'a [u16]>,
 }
 
 /// A parsed search string.
@@ -80,6 +85,12 @@ impl Filter {
         self.terms.is_empty()
     }
 
+    /// Whether matching needs socket data (`:port` terms).
+    #[must_use]
+    pub fn has_port_term(&self) -> bool {
+        self.terms.iter().any(|t| matches!(t, Term::Port(_)))
+    }
+
     /// `Some(score)` if every term matches (higher is better; 0 without free text).
     /// `me` is the current user's account name, for `user:me`.
     pub fn matches(&self, s: &Subject<'_>, me: &str, m: &mut FilterMatcher) -> Option<u32> {
@@ -93,6 +104,7 @@ impl Filter {
                     contains_ci(s.image, n) || s.label.is_some_and(|l| contains_ci(l, n))
                 }
                 Term::Cwd(c) => s.cwd.is_none_or(|cwd| contains_ci(cwd, c)),
+                Term::Port(port) => s.ports.is_some_and(|ps| ps.contains(port)),
                 Term::Text(_) => true,
             };
             if !ok {
@@ -118,6 +130,9 @@ fn contains_ci(hay: &str, needle: &str) -> bool {
 
 fn parse_term(word: &str) -> Term {
     let text = || Term::Text(word.to_owned());
+    if let Some(port) = word.strip_prefix(':') {
+        return port.parse().map_or_else(|_| text(), Term::Port);
+    }
     let Some((key, value)) = word.split_once(':') else {
         return text();
     };
@@ -175,6 +190,7 @@ mod tests {
             cmdline: Some(r#""C:\Program Files\nodejs\node.exe" next dev --port 3000"#),
             user: Some("José"),
             cwd: Some(r"C:\src\Shop"),
+            ports: None,
         }
     }
 
@@ -237,6 +253,23 @@ mod tests {
             ..node()
         };
         assert!(hit("cwd:anything", &s));
+    }
+
+    #[test]
+    fn port_term_parses_and_matches_owned_ports() {
+        assert_eq!(Filter::parse(":3000").terms(), &[Term::Port(3000)]);
+        assert_eq!(Filter::parse(":abc").terms(), &[t(":abc")]);
+        assert_eq!(Filter::parse(":70000").terms(), &[t(":70000")]);
+        assert!(Filter::parse(":3000").has_port_term());
+        assert!(!Filter::parse("node").has_port_term());
+        let with = Subject {
+            ports: Some(&[3000, 9229]),
+            ..node()
+        };
+        assert!(hit(":3000", &with));
+        assert!(hit(":9229 name:node", &with));
+        assert!(!hit(":8080", &with));
+        assert!(!hit(":3000", &node())); // sockets not loaded
     }
 
     #[test]

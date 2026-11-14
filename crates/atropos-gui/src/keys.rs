@@ -17,16 +17,25 @@ pub enum Action {
     ToggleHelp,
     ToggleFreeze,
     Escape,
+    /// `Del`: end the selected process.
+    Kill,
+    /// `Shift+Del`: end the selected process and its subtree.
+    KillTree,
+    /// `Ctrl+P`: suspend or resume the selected process.
+    ToggleSuspend,
 }
 
 /// The shortcut list shown by `?`.
-pub const HELP: [(&str, &str); 8] = [
+pub const HELP: [(&str, &str); 11] = [
     ("Ctrl+K  or  /", "Search"),
     ("Enter", "Open details of the selected process"),
     ("Ctrl+C", "Copy the selected row"),
     ("T", "Flat list / tree"),
     ("F5", "Refresh now"),
     ("Space", "Freeze / unfreeze the row order"),
+    ("Del", "End the selected process"),
+    ("Shift+Del", "End the selected process and its children"),
+    ("Ctrl+P", "Suspend / resume the selected process"),
     ("Esc", "Close help or details"),
     ("?", "This help"),
 ];
@@ -51,6 +60,9 @@ pub fn actions(events: &[Event], typing: bool) -> Vec<Action> {
                     Key::Escape => Some(Action::Escape),
                     Key::C if ctrl && !typing => Some(Action::CopyRow),
                     Key::Enter if !typing => Some(Action::OpenDetails),
+                    Key::Delete if !typing && modifiers.shift => Some(Action::KillTree),
+                    Key::Delete if !typing => Some(Action::Kill),
+                    Key::P if ctrl && !typing => Some(Action::ToggleSuspend),
                     Key::Space if !typing => Some(Action::ToggleFreeze),
                     _ => None,
                 }
@@ -107,6 +119,25 @@ mod tests {
         for (events, want) in cases {
             assert_eq!(actions(&events, false), vec![want], "{events:?}");
         }
+    }
+
+    #[test]
+    fn action_keys() {
+        assert_eq!(
+            actions(&[key(Key::Delete, Modifiers::NONE)], false),
+            vec![Action::Kill]
+        );
+        assert_eq!(
+            actions(&[key(Key::Delete, Modifiers::SHIFT)], false),
+            vec![Action::KillTree]
+        );
+        assert_eq!(
+            actions(&[key(Key::P, Modifiers::COMMAND)], false),
+            vec![Action::ToggleSuspend]
+        );
+        // Del in the search box deletes text.
+        assert_eq!(actions(&[key(Key::Delete, Modifiers::NONE)], true), vec![]);
+        assert_eq!(actions(&[key(Key::P, Modifiers::COMMAND)], true), vec![]);
     }
 
     #[test]

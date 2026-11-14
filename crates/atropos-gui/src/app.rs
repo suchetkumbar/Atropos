@@ -13,6 +13,7 @@ use atropos_core::platform::windows::{
 };
 use eframe::egui;
 
+use crate::actions::{Act, Actions};
 use crate::args::Args;
 use crate::details::{self, DetailEvent, DetailsState};
 use crate::header;
@@ -22,7 +23,7 @@ use crate::startup;
 use crate::table::{self, Event, Look};
 use crate::view::{self, Row, Sort, SortKey, ViewOpts};
 
-const SEARCH_HINT: &str = "Search   pid:123   user:me   name:node   cwd:shop";
+const SEARCH_HINT: &str = "Search   :3000   pid:123   user:me   name:node   cwd:shop";
 
 /// Keyboard-driven UI state.
 #[derive(Debug, Default)]
@@ -53,6 +54,7 @@ pub struct AtroposApp {
     dirty: bool,
     pointer_on_table: bool,
     perf_log: Option<std::fs::File>,
+    actions: Actions,
 }
 
 impl AtroposApp {
@@ -73,6 +75,8 @@ impl AtroposApp {
                 .inspect_err(|e| tracing::warn!("perf log {}: {e}", p.display()))
                 .ok()
         });
+        let self_key = current_process_key().ok();
+        let actions = Actions::spawn(&cc.egui_ctx, self_key);
         Self {
             args,
             create_time,
@@ -80,7 +84,7 @@ impl AtroposApp {
             collector,
             sent: None,
             frame: None,
-            self_key: current_process_key().ok(),
+            self_key,
             me: None,
             search: String::new(),
             filter: Filter::default(),
@@ -94,6 +98,7 @@ impl AtroposApp {
             dirty: false,
             pointer_on_table: false,
             perf_log,
+            actions,
         }
     }
 
@@ -143,6 +148,8 @@ impl AtroposApp {
         let want = Interest {
             visibility,
             selected: self.selection.0,
+            want_ports: self.filter.has_port_term()
+                || (self.details.open && self.details.tab == details::Tab::Ports),
             ..Interest::default()
         };
         if let Some(c) = &self.collector {
@@ -177,8 +184,8 @@ impl AtroposApp {
             &self.opts,
             &mut self.matcher,
         );
-        // The order holds still under the pointer and while a dialog (help) is open.
-        let hold = self.pointer_on_table || self.keys.help;
+        // The order holds still under the pointer and while a dialog is open.
+        let hold = self.pointer_on_table || self.keys.help || self.actions.holds();
         self.rows = self.freeze.apply(fresh, |r| r.key, hold, Instant::now());
         self.dirty = false;
     }
@@ -205,7 +212,24 @@ impl AtroposApp {
                 }
                 self.changed_view();
             }
+            Event::Act(key, act) => self.act(key, act),
         }
+    }
+
+    fn act(&mut self, key: ProcKey, act: Act) {
+        if let Some(f) = &self.frame {
+            self.actions.start(key, act, f);
+        }
+    }
+
+    /// `Ctrl+P`: resume if it is suspended, else suspend.
+    fn toggle_suspend(&mut self, key: ProcKey) {
+        let suspended = self
+            .frame
+            .as_ref()
+            .and_then(|f| f.snapshot.get(key))
+            .is_some_and(|p| p.raw.suspended);
+        self.act(key, if suspended { Act::Resume } else { Act::Suspend });
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -288,6 +312,23 @@ impl AtroposApp {
                     }
                     self.dirty = true;
                 }
+                Action::Kill | Action::KillTree | Action::ToggleSuspend | Action::Escape
+                    if self.actions.holds() => {}
+                Action::Kill => {
+                    if let Some(k) = self.selection.0 {
+                        self.act(k, Act::Kill);
+                    }
+                }
+                Action::KillTree => {
+                    if let Some(k) = self.selection.0 {
+                        self.act(k, Act::KillTree);
+                    }
+                }
+                Action::ToggleSuspend => {
+                    if let Some(k) = self.selection.0 {
+                        self.toggle_suspend(k);
+                    }
+                }
                 Action::Escape => {
                     if self.keys.help {
                         self.keys.help = false;
@@ -334,6 +375,8 @@ impl eframe::App for AtroposApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let frame_start = Instant::now();
         self.poll();
+        let now = Instant::now();
+        self.actions.poll(now);
         let today = local_time(now_filetime());
         let refresh = self.on_keys(ctx, today);
         self.steer(ctx, refresh);
@@ -387,12 +430,15 @@ impl eframe::App for AtroposApp {
                 per_core: self.opts.per_core,
                 today,
             };
-            let events = table::show(ui, &frame, &self.rows, look);
+            let events = table::show(ui, &frame, &self.rows, look, &self.actions);
             self.pointer_on_table = ui.ui_contains_pointer();
             for e in events {
                 self.on_event(e);
             }
         });
+        if let Some(f) = self.frame.clone() {
+            self.actions.show(ctx, &f, today, now);
+        }
         if self.dirty {
             // A view change made this frame: show it now rather than at the next tick.
             ctx.request_repaint();

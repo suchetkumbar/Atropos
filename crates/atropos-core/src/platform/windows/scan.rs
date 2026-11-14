@@ -173,6 +173,9 @@ fn system_stats() -> SystemStats {
 pub struct WindowsPlatform {
     buf: Vec<u64>,
     sids: super::statics::SidCache,
+    /// `atr.exe`, which delivers console Ctrl+C (`atr.exe __ctrl-c <pid> <create_time>`).
+    /// `None`: the console strategy is unavailable and stops escalate to force (Z1).
+    ctrl_c_helper: Option<std::path::PathBuf>,
 }
 
 impl WindowsPlatform {
@@ -181,7 +184,17 @@ impl WindowsPlatform {
         Self {
             buf: vec![0; INITIAL_BYTES / 8],
             sids: super::statics::SidCache::new(),
+            ctrl_c_helper: None,
         }
+    }
+}
+
+impl WindowsPlatform {
+    /// Uses `helper` (normally `atr.exe`) for console Ctrl+C.
+    #[must_use]
+    pub fn with_ctrl_c_helper(mut self, helper: std::path::PathBuf) -> Self {
+        self.ctrl_c_helper = Some(helper);
+        self
     }
 }
 
@@ -226,6 +239,70 @@ impl Platform for WindowsPlatform {
 
     fn cwd_and_env(&mut self, key: crate::ProcKey) -> crate::Field<crate::platform::ProcEnv> {
         super::peb::read(key)
+    }
+
+    fn pin(
+        &mut self,
+        key: crate::ProcKey,
+        access: crate::pin::Access,
+    ) -> std::result::Result<crate::pin::Pinned, crate::pin::PinError> {
+        super::pin::pin(key, access)
+    }
+
+    fn wait_exits(
+        &mut self,
+        pins: &[&crate::pin::Pinned],
+        timeout: std::time::Duration,
+    ) -> Vec<bool> {
+        super::pin::wait_exits(pins, timeout)
+    }
+
+    fn strategy(&mut self, p: &crate::pin::Pinned) -> crate::engine::kill::Strategy {
+        super::graceful::strategy(p, self.ctrl_c_helper.as_deref())
+    }
+
+    fn graceful(
+        &mut self,
+        p: &crate::pin::Pinned,
+        how: &crate::engine::kill::Strategy,
+    ) -> Result<()> {
+        super::graceful::graceful(p, how, self.ctrl_c_helper.as_deref())
+    }
+
+    fn terminate(&mut self, p: &crate::pin::Pinned) -> Result<()> {
+        super::pin::terminate(p)
+    }
+
+    fn suspend(&mut self, p: &crate::pin::Pinned) -> Result<()> {
+        super::job::suspend(p)
+    }
+
+    fn resume(&mut self, p: &crate::pin::Pinned) -> Result<()> {
+        super::job::resume(p)
+    }
+
+    fn create_job(&mut self) -> Result<crate::pin::Job> {
+        super::job::create()
+    }
+
+    fn assign(&mut self, job: &crate::pin::Job, p: &crate::pin::Pinned) -> Result<()> {
+        super::job::assign(job, p)
+    }
+
+    fn terminate_job(&mut self, job: &crate::pin::Job) -> Result<()> {
+        super::job::terminate(job)
+    }
+
+    fn console_processes(&mut self, key: crate::ProcKey) -> Result<Vec<u32>> {
+        super::ctrl_c::console_processes(key, self.ctrl_c_helper.as_deref())
+    }
+
+    fn sockets(&mut self) -> Result<Vec<crate::ports::Socket>> {
+        super::net::sockets()
+    }
+
+    fn services(&mut self) -> Result<Vec<crate::ports::ServiceInfo>> {
+        super::services::services()
     }
 }
 

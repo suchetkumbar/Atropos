@@ -75,5 +75,6 @@ pub fn frame() -> Frame {
         tick_ms: 0.0,
         scan_ms: 0.0,
         env: None,
+        sockets: None,
     }
 }

@@ -48,7 +48,7 @@ pub(crate) fn open_error_reason(code: u32) -> Field<()> {
 /// Account names by SID bytes (lookups can be slow; SIDs repeat across processes).
 pub(crate) type SidCache = HashMap<Vec<u8>, Field<Arc<str>>>;
 
-fn win32_code(e: &windows::core::Error) -> u32 {
+pub(crate) fn win32_code(e: &windows::core::Error) -> u32 {
     u32::try_from(e.code().0 & 0xFFFF).unwrap_or(0)
 }
 
@@ -94,7 +94,7 @@ fn gone_if_failed<T>(f: Field<T>) -> Field<T> {
     }
 }
 
-fn create_time(h: HANDLE) -> Option<u64> {
+pub(crate) fn create_time(h: HANDLE) -> Option<u64> {
     let (mut created, mut exited, mut kernel, mut user) = (
         FILETIME::default(),
         FILETIME::default(),
@@ -124,7 +124,7 @@ fn has_exited(h: HANDLE) -> bool {
     ok && code != still
 }
 
-fn exe_path(h: HANDLE) -> Field<Arc<str>> {
+pub(crate) fn exe_path(h: HANDLE) -> Field<Arc<str>> {
     let mut buf = vec![0u16; 32_768];
     let mut len = u32::try_from(buf.len()).unwrap_or(0);
     // SAFETY: `buf` holds `len` UTF-16 units; `len` is a valid in/out pointer.

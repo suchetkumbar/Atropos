@@ -10,6 +10,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crate::Field;
 use crate::ProcKey;
 use crate::platform::{Platform, ProcEnv, RawProc};
+use crate::ports::Socket;
 use crate::ring::Ring;
 use crate::snapshot::{Snapshot, build};
 use crate::statics::{StaticsCache, StaticsMap};
@@ -38,6 +39,8 @@ pub struct Interest {
     pub selected: Option<ProcKey>,
     /// Scan now instead of waiting for the tick (`F5`).
     pub refresh_now: bool,
+    /// Read sockets every tick (a `:port` search or the Ports tab is active).
+    pub want_ports: bool,
 }
 
 /// Tick for this interest: 1 s focused, 2 s visible, 5 s minimized, or the clamped override.
@@ -67,6 +70,8 @@ pub struct Frame {
     /// Working directory and environment of `Interest::selected`, read once per selection
     /// (and again on `refresh_now`).
     pub env: Option<(ProcKey, Arc<Field<ProcEnv>>)>,
+    /// All sockets, read this tick when `Interest::want_ports` (else `None`).
+    pub sockets: Option<Arc<Vec<Socket>>>,
 }
 
 /// Sends `item`, first discarding a frame the UI has not taken yet (drop-oldest). `drain` is the
@@ -150,6 +155,15 @@ fn run(
                     None => None,
                 };
                 env_stale = false;
+                let sockets = if interest.want_ports {
+                    platform
+                        .sockets()
+                        .inspect_err(|e| tracing::warn!("sockets: {e}"))
+                        .ok()
+                        .map(Arc::new)
+                } else {
+                    None
+                };
                 let (mut cpu_history, mut mem_history) = prev
                     .as_ref()
                     .map(|f| (f.cpu_history, f.mem_history))
@@ -164,6 +178,7 @@ fn run(
                     tick_ms: started.elapsed().as_secs_f32() * 1000.0,
                     scan_ms,
                     env: env.clone(),
+                    sockets,
                 });
                 send_latest(frame_tx, drain, Arc::clone(&frame));
                 notify();
@@ -343,6 +358,39 @@ mod tests {
             .unwrap();
         let f3 = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(Arc::ptr_eq(&f3.env.clone().unwrap().1, &env));
+    }
+
+    #[test]
+    fn sockets_are_read_only_when_wanted() {
+        use crate::ports::Proto;
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![RawProc::new(
+            ProcKey {
+                pid: 10,
+                create_time: 1,
+            },
+            0,
+            "node.exe",
+        )]);
+        f.sockets = vec![Socket {
+            proto: Proto::Tcp,
+            local: "127.0.0.1:3000".parse().unwrap(),
+            remote: None,
+            state: None,
+            owner: 10,
+        }];
+        let c = spawn(Box::new(f), Box::new(|| {})).unwrap();
+        let first = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(first.sockets.is_none());
+        c.interest
+            .send(Interest {
+                want_ports: true,
+                refresh_now: true,
+                ..focused()
+            })
+            .unwrap();
+        let next = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(next.sockets.as_ref().map(|s| s.len()), Some(1));
     }
 
     #[test]

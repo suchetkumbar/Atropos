@@ -8,6 +8,7 @@ use atropos_core::{Field, ProcKey};
 use eframe::egui::{self, Align, Layout, RichText};
 use egui_extras::{Column, TableBuilder};
 
+use crate::actions::{Act, Actions};
 use crate::format;
 use crate::view::{Row, Sort, SortKey};
 
@@ -25,7 +26,12 @@ pub enum Event {
     Sort(SortKey),
     /// Expand or collapse a tree node.
     Toggle(ProcKey),
+    /// Context-menu action.
+    Act(ProcKey, Act),
 }
+
+/// Pause marker for suspended processes.
+pub const PAUSED: &str = "⏸";
 
 /// Columns, in order: title, sort key, tooltip.
 pub const COLUMNS: [(&str, SortKey, &str); 10] = [
@@ -98,7 +104,13 @@ fn right(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response
 }
 
 /// Draws the table; returns the events of this frame.
-pub fn show(ui: &mut egui::Ui, frame: &Frame, rows: &[Row], look: Look) -> Vec<Event> {
+pub fn show(
+    ui: &mut egui::Ui,
+    frame: &Frame,
+    rows: &[Row],
+    look: Look,
+    actions: &Actions,
+) -> Vec<Event> {
     let mut events = Vec::new();
     // Selectable labels would swallow the click meant for the row.
     ui.style_mut().interaction.selectable_labels = false;
@@ -137,10 +149,33 @@ pub fn show(ui: &mut egui::Ui, frame: &Frame, rows: &[Row], look: Look) -> Vec<E
         body.rows(ROW_HEIGHT, rows.len(), |mut tr| {
             let row = rows[tr.index()];
             tr.set_selected(look.selected == Some(row.key));
-            row_cells(&mut tr, frame, &row, look, &mut events);
-            if tr.response().clicked() {
+            row_cells(&mut tr, frame, &row, look, actions, &mut events);
+            let resp = tr.response();
+            if resp.clicked() {
                 events.push(Event::Select(row.key));
             }
+            resp.context_menu(|ui| {
+                let suspended = frame.snapshot.get(row.key).is_some_and(|p| p.raw.suspended);
+                let items = [
+                    ("End process", "Del", Act::Kill),
+                    ("End process tree", "Shift+Del", Act::KillTree),
+                    if suspended {
+                        ("Resume", "Ctrl+P", Act::Resume)
+                    } else {
+                        ("Suspend", "Ctrl+P", Act::Suspend)
+                    },
+                ];
+                for (text, keys, act) in items {
+                    if ui
+                        .add(egui::Button::new(text).shortcut_text(keys))
+                        .clicked()
+                    {
+                        events.push(Event::Select(row.key));
+                        events.push(Event::Act(row.key, act));
+                        ui.close();
+                    }
+                }
+            });
         });
     });
     events
@@ -193,9 +228,11 @@ fn row_cells(
     frame: &Frame,
     row: &Row,
     look: Look,
+    actions: &Actions,
     events: &mut Vec<Event>,
 ) {
     let st = frame.statics.get(&row.key);
+    let suspended = frame.snapshot.procs[row.idx].raw.suspended;
     let [name, numbers @ .., user, started] = cell_texts(frame, row, look.per_core, look.today);
     tr.col(|ui| {
         ui.add_space(f32::from(row.depth) * INDENT);
@@ -205,9 +242,18 @@ fn row_cells(
                 events.push(Event::Toggle(row.key));
             }
         }
-        let name = ui.label(name);
+        let count = actions.suspend_count(row.key);
+        let shown = match (suspended, count) {
+            (true, n) if n > 1 => format!("{PAUSED} {name} ×{n}"),
+            (true, _) => format!("{PAUSED} {name}"),
+            _ => name,
+        };
+        let name = ui.label(shown);
         if let Some(path) = st.and_then(|s| s.exe_path.ok()) {
             name.on_hover_text(&**path);
+        }
+        if let Some(status) = actions.status().get(&row.key) {
+            ui.label(RichText::new(status).weak().italics());
         }
     });
     for text in numbers {
@@ -241,6 +287,8 @@ mod tests {
         opts: ViewOpts,
         selected: Option<ProcKey>,
         rows: Vec<Row>,
+        actions: Actions,
+        acts: Vec<(ProcKey, Act)>,
     }
 
     impl State {
@@ -250,6 +298,8 @@ mod tests {
                 opts: ViewOpts::default(),
                 selected: None,
                 rows: Vec::new(),
+                actions: Actions::new(None),
+                acts: Vec::new(),
             };
             s.recompute();
             s
@@ -277,7 +327,7 @@ mod tests {
                         per_core: false,
                         today: None,
                     };
-                    for e in show(ui, &s.frame, &s.rows, look) {
+                    for e in show(ui, &s.frame, &s.rows, look, &s.actions) {
                         match e {
                             Event::Select(key) => s.selected = Some(key),
                             Event::Sort(key) => {
@@ -293,6 +343,7 @@ mod tests {
                                 }
                                 s.recompute();
                             }
+                            Event::Act(key, act) => s.acts.push((key, act)),
                         }
                     }
                 },
@@ -336,6 +387,29 @@ mod tests {
             ..row
         };
         assert!(row_text(&f, &svc, false, None).contains("\tRestricted\t"));
+    }
+
+    #[test]
+    fn context_menu_starts_actions() {
+        let mut h = harness();
+        h.run();
+        h.get_by_label("Code.exe").click_secondary();
+        h.run();
+        h.get_by_label_contains("End process tree").click();
+        h.run();
+        assert_eq!(h.state().acts, vec![(k(3), Act::KillTree)]);
+        assert_eq!(h.state().selected, Some(k(3)));
+    }
+
+    #[test]
+    fn suspended_rows_show_a_pause_marker_and_status() {
+        let mut h = harness();
+        let i = h.state().frame.snapshot.index[&k(3)];
+        h.state_mut().frame.snapshot.procs[i].raw.suspended = true;
+        h.state_mut().actions.set_status(k(2), "Closing… 3s");
+        h.run();
+        assert!(h.query_by_label("⏸ Code.exe").is_some());
+        assert!(h.query_by_label("Closing… 3s").is_some());
     }
 
     #[test]

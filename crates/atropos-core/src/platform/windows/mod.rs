@@ -1,16 +1,25 @@
 //! Windows backend. This is the only module where `unsafe` is allowed; every block carries a `// SAFETY:` note.
 
 mod alloc;
+mod ctrl_c;
 mod dialog;
+pub mod fixture_support;
+mod graceful;
 mod handle;
+mod job;
+mod net;
 mod peb;
+mod pin;
 mod process;
 mod scan;
+mod services;
 mod statics;
 mod time;
 
 pub use alloc::CountingAlloc;
+pub use ctrl_c::{ctrl_c_helper_main, send_ctrl_c};
 pub use dialog::fatal_message;
+pub(crate) use handle::OwnedHandle;
 pub use process::{current_process_key, now_filetime};
 pub use scan::WindowsPlatform;
 pub use time::{LocalTime, local_time};

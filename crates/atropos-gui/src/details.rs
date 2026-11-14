@@ -21,6 +21,7 @@ pub enum Tab {
     #[default]
     Overview,
     Environment,
+    Ports,
 }
 
 /// Panel state; revealed secrets are forgotten when the selection changes.
@@ -203,6 +204,49 @@ fn environment(ui: &mut egui::Ui, env: Option<&Field<ProcEnv>>, revealed: &mut H
         });
 }
 
+/// Sockets of `key`, with a forwarded-port badge when the process is a Docker/WSL relay.
+fn ports_tab(ui: &mut egui::Ui, frame: &Frame, key: ProcKey) {
+    use atropos_core::ports::{Proto, TcpState, badge};
+    if let Some(b) = frame.snapshot.get(key).and_then(|p| badge(&p.raw.image)) {
+        ui.label(RichText::new(b.text()).strong())
+            .on_hover_text("This process forwards the port; the real listener is elsewhere");
+        ui.separator();
+    }
+    let Some(all) = &frame.sockets else {
+        ui.label("Reading…");
+        return;
+    };
+    let mine: Vec<_> = all.iter().filter(|s| s.owner == key.pid).collect();
+    if mine.is_empty() {
+        ui.label("No open sockets");
+        return;
+    }
+    egui::Grid::new("ports")
+        .num_columns(4)
+        .striped(true)
+        .show(ui, |ui| {
+            for h in ["Proto", "Local", "Remote", "State"] {
+                ui.label(RichText::new(h).weak());
+            }
+            ui.end_row();
+            for s in mine {
+                ui.label(match s.proto {
+                    Proto::Tcp => "TCP",
+                    Proto::Udp => "UDP",
+                });
+                ui.label(RichText::new(s.local.to_string()).monospace());
+                ui.label(s.remote.map_or_else(|| "—".to_owned(), |r| r.to_string()));
+                ui.label(match s.state {
+                    Some(TcpState::Listen) => "Listening".to_owned(),
+                    Some(TcpState::Established) => "Connected".to_owned(),
+                    Some(TcpState::Other(n)) => format!("State {n}"),
+                    None => "—".to_owned(),
+                });
+                ui.end_row();
+            }
+        });
+}
+
 /// Draws the panel for `key`.
 pub fn show(
     ui: &mut egui::Ui,
@@ -219,6 +263,7 @@ pub fn show(
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, Tab::Overview, "Overview");
         ui.selectable_value(&mut state.tab, Tab::Environment, "Environment");
+        ui.selectable_value(&mut state.tab, Tab::Ports, "Ports");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.small_button("✖").on_hover_text("Close (Esc)").clicked() {
                 event = Some(DetailEvent::Close);
@@ -236,6 +281,7 @@ pub fn show(
                 .map(|(_, e)| &**e);
             environment(ui, env, &mut state.revealed);
         }
+        Tab::Ports => ports_tab(ui, frame, key),
     });
     event
 }
@@ -306,6 +352,68 @@ mod tests {
         let mut h = harness(f);
         h.run();
         assert!(h.query_by_label(LOCK).is_some());
+    }
+
+    fn with_sockets(image_pid: u32) -> Frame {
+        use atropos_core::ports::{Proto, Socket, TcpState};
+        let mut f = frame();
+        f.sockets = Some(Arc::new(vec![
+            Socket {
+                proto: Proto::Tcp,
+                local: "127.0.0.1:3000".parse().unwrap(),
+                remote: None,
+                state: Some(TcpState::Listen),
+                owner: image_pid,
+            },
+            Socket {
+                proto: Proto::Udp,
+                local: "[::1]:5353".parse().unwrap(),
+                remote: None,
+                state: None,
+                owner: 99,
+            },
+        ]));
+        f
+    }
+
+    fn ports_harness(f: Frame, key: ProcKey) -> Harness<'static, (Frame, DetailsState)> {
+        let state = DetailsState {
+            tab: Tab::Ports,
+            ..DetailsState::default()
+        };
+        Harness::new_ui_state(
+            move |ui, (f, st): &mut (Frame, DetailsState)| {
+                show(ui, f, key, st, None);
+            },
+            (f, state),
+        )
+    }
+
+    #[test]
+    fn ports_tab_lists_only_this_processes_sockets() {
+        let mut h = ports_harness(with_sockets(2), k(2));
+        h.run();
+        assert!(h.query_by_label("127.0.0.1:3000").is_some());
+        assert!(h.query_by_label("Listening").is_some());
+        assert!(h.query_by_label("[::1]:5353").is_none());
+        assert!(h.query_by_label("Docker port forward").is_none());
+    }
+
+    #[test]
+    fn ports_tab_badges_a_forwarder() {
+        let mut f = with_sockets(2);
+        let i = f.snapshot.index[&k(2)];
+        f.snapshot.procs[i].raw.image = Arc::from("wslrelay.exe");
+        let mut h = ports_harness(f, k(2));
+        h.run();
+        assert!(h.query_by_label("WSL relay").is_some());
+    }
+
+    #[test]
+    fn ports_tab_before_sockets_are_read() {
+        let mut h = ports_harness(frame(), k(2));
+        h.run();
+        assert!(h.query_by_label("Reading…").is_some());
     }
 
     #[test]

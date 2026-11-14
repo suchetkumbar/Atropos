@@ -4,6 +4,9 @@
 
 use std::sync::Arc;
 
+use crate::engine::kill::Strategy;
+use crate::pin::{Access, Job, PinError, Pinned};
+use crate::ports::{ServiceInfo, Socket};
 use crate::statics::Statics;
 use crate::{ProcKey, Result};
 
@@ -12,7 +15,7 @@ pub mod fake;
 #[allow(unsafe_code)]
 pub mod windows;
 
-pub use fake::FakePlatform;
+pub use fake::{FakePlatform, Reaction};
 
 /// One process as returned by a single scan (tier 0): identity plus the per-tick dynamic fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,4 +92,78 @@ pub trait Platform: Send {
 
     /// Reads the working directory and environment of `key` (tier 2, on demand).
     fn cwd_and_env(&mut self, key: ProcKey) -> crate::Field<ProcEnv>;
+
+    /// All TCP and UDP sockets (IPv4 and IPv6) with their owner PIDs.
+    ///
+    /// # Errors
+    /// If the OS tables cannot be read.
+    fn sockets(&mut self) -> Result<Vec<Socket>>;
+
+    /// Running services and the PIDs hosting them.
+    ///
+    /// # Errors
+    /// If the service manager cannot be queried.
+    fn services(&mut self) -> Result<Vec<ServiceInfo>>;
+
+    /// Opens `key` with `access` and verifies its create time on the handle.
+    ///
+    /// # Errors
+    /// `Reused` if the PID now belongs to another process, `Gone` if it exited, `Denied` if the
+    /// OS refused the access.
+    fn pin(&mut self, key: ProcKey, access: Access) -> std::result::Result<Pinned, PinError>;
+
+    /// For each pin, whether its process has exited, waiting up to `timeout` for the first exit.
+    fn wait_exits(&mut self, pins: &[&Pinned], timeout: std::time::Duration) -> Vec<bool>;
+
+    /// The graceful way to stop this process (service stop, `WM_CLOSE`, console Ctrl+C) or
+    /// `Strategy::None`.
+    fn strategy(&mut self, p: &Pinned) -> Strategy;
+
+    /// Sends the graceful request; does not wait.
+    ///
+    /// # Errors
+    /// If the request could not be delivered (the caller escalates to force).
+    fn graceful(&mut self, p: &Pinned, how: &Strategy) -> Result<()>;
+
+    /// `TerminateProcess` through the pinned handle; does not wait.
+    ///
+    /// # Errors
+    /// If the OS refuses.
+    fn terminate(&mut self, p: &Pinned) -> Result<()>;
+
+    /// Increments the process's suspend count (`NtSuspendProcess`).
+    ///
+    /// # Errors
+    /// If the OS refuses.
+    fn suspend(&mut self, p: &Pinned) -> Result<()>;
+
+    /// Decrements the process's suspend count (`NtResumeProcess`).
+    ///
+    /// # Errors
+    /// If the OS refuses.
+    fn resume(&mut self, p: &Pinned) -> Result<()>;
+
+    /// Creates an empty Job Object.
+    ///
+    /// # Errors
+    /// If the OS refuses.
+    fn create_job(&mut self) -> Result<Job>;
+
+    /// Puts a pinned process into `job`; its future children land there too.
+    ///
+    /// # Errors
+    /// If the process cannot be assigned (it is then handled one by one).
+    fn assign(&mut self, job: &Job, p: &Pinned) -> Result<()>;
+
+    /// Terminates every process in `job`.
+    ///
+    /// # Errors
+    /// If the OS refuses.
+    fn terminate_job(&mut self, job: &Job) -> Result<()>;
+
+    /// PIDs attached to the console of `key` ("all processes started from this terminal").
+    ///
+    /// # Errors
+    /// If `key` has no console or the helper is unavailable.
+    fn console_processes(&mut self, key: ProcKey) -> Result<Vec<u32>>;
 }

@@ -18,6 +18,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct SpawnedFixture {
     pub key: ProcKey,
     child: Child,
+    /// Stdout lines after the key line.
+    lines: mpsc::Receiver<String>,
 }
 
 impl SpawnedFixture {
@@ -25,6 +27,12 @@ impl SpawnedFixture {
     #[must_use]
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// The next stdout line after the key line, if one arrives within `timeout`.
+    #[must_use]
+    pub fn next_line(&self, timeout: Duration) -> Option<String> {
+        self.lines.recv_timeout(timeout).ok()
     }
 }
 
@@ -85,18 +93,23 @@ pub fn spawn_cmd(mut cmd: Command, args: &[&str]) -> anyhow::Result<SpawnedFixtu
     let stdout = child.stdout.take().context("no stdout pipe")?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = tx.send(line);
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
     });
+    let line = rx.recv_timeout(READY_TIMEOUT);
     let mut fixture = SpawnedFixture {
         key: ProcKey {
             pid: child.id(),
             create_time: 0,
         },
         child,
+        lines: rx,
     };
-    let line = rx.recv_timeout(READY_TIMEOUT).with_context(|| {
+    let line = line.with_context(|| {
         format!("fixture '{name}' did not report its key within {READY_TIMEOUT:?}")
     })?;
     fixture.key =

@@ -6,9 +6,11 @@ compile_error!("enable exactly one of `renderer-glow` / `renderer-wgpu`");
 #[cfg(not(any(feature = "renderer-glow", feature = "renderer-wgpu")))]
 compile_error!("enable one of `renderer-glow` / `renderer-wgpu`");
 
+mod actions;
 mod app;
 mod args;
 mod details;
+mod dialog;
 mod fatal;
 mod format;
 mod header;
@@ -20,6 +22,7 @@ mod startup;
 mod table;
 #[cfg(test)]
 mod test_frame;
+mod toast;
 mod view;
 
 use eframe::egui;

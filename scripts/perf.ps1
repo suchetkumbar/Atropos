@@ -3,7 +3,7 @@
 .SYNOPSIS
   Measures Atropos against the spec §3.2 budgets and compares with a baseline (fails on > 20% regression).
 .DESCRIPTION
-  Modes (comma-separated; 'all' = startup,idle,size,deps):
+  Modes (comma-separated; 'all' = startup,idle,size,deps,cli):
     startup  Cold start to first frame: median of -Runs launches (one discarded warm-up), via --startup-log.
     idle     After -Minutes with the window visible but not focused (ADR 0007: the "visible idle" state,
              2 s tick; the script focuses a small window of its own): Atropos's own heap (budget 40 MB; ADR 0005),
@@ -14,6 +14,8 @@
              call p95 (tracked).
     size     Release binary sizes (budget 15 MB each).
     deps     No CRT DLL imports (static CRT; Z1). Uses dumpbin located through vswhere.
+    cli      `atr port <n>` median time (budget 100 ms; hyperfine if installed) against a port this
+             script holds, and `atr`'s private working set while it runs (budget 10 MB).
   Only ever closes the Atropos.exe instances this script started itself (through its own Process objects).
 .EXAMPLE
   pwsh scripts/perf.ps1 -Mode all -Minutes 10
@@ -38,7 +40,7 @@ if (-not $Exe) { $Exe = Join-Path $root 'target\release\Atropos.exe' }
 if (-not $CliExe) { $CliExe = Join-Path $root 'target\release\atr.exe' }
 if (-not $Baseline) { $Baseline = Join-Path $root 'perf\baseline.json' }
 $modes = ($Mode -split ',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }
-if ($modes -contains 'all') { $modes = 'startup', 'idle', 'size', 'deps' }
+if ($modes -contains 'all') { $modes = 'startup', 'idle', 'size', 'deps', 'cli' }
 
 # Budgets (spec §3.2; idle memory per ADR 0005). Lower is better for every metric.
 # $null = no budget, but still compared with the baseline for > 20% regressions.
@@ -51,6 +53,8 @@ $budget = [ordered]@{
     collector_scan_p95_ms = $null
     atropos_exe_mb       = 15
     atr_exe_mb           = 15
+    atr_port_ms_median   = 100
+    cli_private_ws_mb    = 10
 }
 $result = [ordered]@{
     renderer = $Renderer
@@ -146,6 +150,39 @@ if ($modes -contains 'idle') {
     Remove-Item $idleLog -ErrorAction SilentlyContinue
     if ($heap.Count -eq 0) { $failures.Add('idle: no app_heap_mb line (Atropos did not exit cleanly)') }
     else { $result.gui_app_heap_mb = [double]($heap[-1] -replace '^app_heap_mb=', '') }
+}
+
+if ($modes -contains 'cli') {
+    # A port owned by this script, so `atr port` has something real to find.
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $port = $listener.LocalEndpoint.Port
+    try {
+        $hf = Get-Command hyperfine -ErrorAction SilentlyContinue
+        if ($hf) {
+            $json = Join-Path ([IO.Path]::GetTempPath()) "atropos-hf-$PID.json"
+            & $hf.Source --warmup 3 --runs 30 -N --export-json $json "`"$CliExe`" port $port" | Out-Null
+            $r0 = (Get-Content $json -Raw | ConvertFrom-Json).results[0]
+            # hyperfine 1.x: results[0].median; 2.x: results[0].summary.time_wall_clock.median.
+            $median = if ($null -ne $r0.median) { $r0.median } else { $r0.summary.time_wall_clock.median }
+            Remove-Item $json -ErrorAction SilentlyContinue
+            $result.atr_port_ms_median = [math]::Round($median * 1000, 1)
+            $result.atr_port_timer = 'hyperfine'
+        } else {
+            $times = foreach ($i in 1..20) {
+                $sw = [Diagnostics.Stopwatch]::StartNew(); & $CliExe port $port | Out-Null; $sw.Elapsed.TotalMilliseconds
+            }
+            $sorted = @($times | Sort-Object)
+            $result.atr_port_ms_median = [math]::Round($sorted[[int][math]::Floor(($sorted.Count - 1) / 2)], 1)
+            $result.atr_port_timer = 'stopwatch'
+        }
+        # Memory while `atr` runs: it waits on our busy port; we stop it ourselves.
+        $w = Start-Process -FilePath $CliExe -ArgumentList 'wait-port', $port, '--timeout', '20s' -WindowStyle Hidden -PassThru
+        Start-Sleep -Milliseconds 1500
+        $w.Refresh()
+        $result.cli_private_ws_mb = [math]::Round($w.PrivateMemorySize64 / 1MB, 2)
+        if (-not $w.HasExited) { $w.Kill(); [void]$w.WaitForExit(5000) }
+    } finally { $listener.Stop() }
 }
 
 if ($modes -contains 'size') {

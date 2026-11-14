@@ -6,11 +6,14 @@
 
 pub mod collector;
 pub mod cpu;
+pub mod engine;
 pub mod error;
 pub mod filter;
 pub mod model;
 pub mod paths;
+pub mod pin;
 pub mod platform;
+pub mod ports;
 pub mod ring;
 pub mod secrets;
 pub mod snapshot;

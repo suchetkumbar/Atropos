@@ -66,7 +66,7 @@ pub struct Row {
 
 /// The filter text as seen by [`Filter`], for one process.
 #[must_use]
-pub fn subject<'a>(p: &'a Proc, s: Option<&'a Statics>) -> Subject<'a> {
+pub fn subject<'a>(p: &'a Proc, s: Option<&'a Statics>, ports: Option<&'a [u16]>) -> Subject<'a> {
     Subject {
         pid: p.raw.key.pid,
         image: &p.raw.image,
@@ -74,6 +74,7 @@ pub fn subject<'a>(p: &'a Proc, s: Option<&'a Statics>) -> Subject<'a> {
         cmdline: s.and_then(|s| s.cmdline.ok()).map(|c| &**c),
         user: s.and_then(|s| s.user.ok()).map(|u| &**u),
         cwd: None,
+        ports,
     }
 }
 
@@ -112,6 +113,20 @@ fn compare(frame: &Frame, sort: Sort, tree: bool, a: &Proc, b: &Proc) -> Orderin
     primary.then(a.raw.key.pid.cmp(&b.raw.key.pid))
 }
 
+/// Local ports per PID from this frame's sockets (`None` when sockets were not read).
+fn port_map(frame: &Frame) -> Option<std::collections::HashMap<u32, Vec<u16>>> {
+    frame.sockets.as_ref().map(|ss| {
+        let mut m: std::collections::HashMap<u32, Vec<u16>> = std::collections::HashMap::new();
+        for s in ss.iter() {
+            let v = m.entry(s.owner).or_default();
+            if !v.contains(&s.local.port()) {
+                v.push(s.local.port());
+            }
+        }
+        m
+    })
+}
+
 /// Visible rows for `frame`. With a filter in tree mode, ancestors of matches stay visible
 /// (expanded) so every match keeps its context.
 #[must_use]
@@ -124,12 +139,16 @@ pub fn rows(
 ) -> Vec<Row> {
     let snap = &frame.snapshot;
     let procs = &snap.procs;
+    let ports = port_map(frame);
     let matched: Option<Vec<bool>> = (!filter.is_empty()).then(|| {
         procs
             .iter()
             .map(|p| {
                 let st = frame.statics.get(&p.raw.key).map(|s| &**s);
-                filter.matches(&subject(p, st), me, m).is_some()
+                let own: Option<&[u16]> = ports
+                    .as_ref()
+                    .map(|m| m.get(&p.raw.key.pid).map_or(&[][..], Vec::as_slice));
+                filter.matches(&subject(p, st, own), me, m).is_some()
             })
             .collect()
     });
@@ -268,6 +287,36 @@ mod tests {
     #[test]
     fn user_me_excludes_restricted_user() {
         assert_eq!(pids(&run("user:me", &ViewOpts::default())), [2, 3, 4, 1]);
+    }
+
+    #[test]
+    fn port_filter_uses_the_frames_sockets() {
+        use atropos_core::ports::{Proto, Socket};
+        let mut f = frame();
+        let filter = Filter::parse(":3000");
+        let none = rows(
+            &f,
+            &filter,
+            "josé",
+            &ViewOpts::default(),
+            &mut FilterMatcher::default(),
+        );
+        assert!(none.is_empty(), "no sockets loaded yet");
+        f.sockets = Some(std::sync::Arc::new(vec![Socket {
+            proto: Proto::Tcp,
+            local: "[::1]:3000".parse().unwrap(),
+            remote: None,
+            state: None,
+            owner: 4,
+        }]));
+        let got = rows(
+            &f,
+            &filter,
+            "josé",
+            &ViewOpts::default(),
+            &mut FilterMatcher::default(),
+        );
+        assert_eq!(pids(&got), [4]);
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "renderer": "glow",
+  "os_build": "10.0.26200.0",
+  "taken_at": "2026-11-14T00:12:18.5587262+05:30",
+  "startup_ms_median": 148.4,
+  "startup_ms_max": 175.5,
+  "gui_private_ws_mb": 96.9,
+  "gui_private_ws_peak_mb": 96.9,
+  "gui_cpu_pct_one_core": 0.409,
+  "idle_minutes": 10.0,
+  "gui_app_heap_mb": 6.5,
+  "atropos_exe_mb": 4.55,
+  "atr_exe_mb": 0.7,
+  "deps_Atropos": "kernel32.dll api-ms-win-core-synch-l1-2-0.dll user32.dll ntdll.dll shlwapi.dll gdi32.dll ole32.dll shell32.dll bcryptprimitives.dll OPENGL32.dll KERNEL32.dll USER32.dll GDI32.dll ADVAPI32.dll imm32.dll dwmapi.dll uxtheme.dll",
+  "deps_atr": "KERNEL32.dll ntdll.dll api-ms-win-core-synch-l1-2-0.dll"
+}

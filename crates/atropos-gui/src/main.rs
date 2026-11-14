@@ -15,6 +15,11 @@ mod startup;
 
 use eframe::egui;
 
+/// Counts Atropos's own heap; drivers allocate elsewhere (ADR 0005).
+#[global_allocator]
+pub static ALLOC: atropos_core::platform::windows::CountingAlloc =
+    atropos_core::platform::windows::CountingAlloc::new();
+
 #[cfg(feature = "renderer-glow")]
 const RENDERER: (eframe::Renderer, &str) = (eframe::Renderer::Glow, "OpenGL (glow)");
 #[cfg(feature = "renderer-wgpu")]

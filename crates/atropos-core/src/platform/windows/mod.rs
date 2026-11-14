@@ -1,8 +1,10 @@
 //! Windows backend. This is the only module where `unsafe` is allowed; every block carries a `// SAFETY:` note.
 
+mod alloc;
 mod dialog;
 mod process;
 
+pub use alloc::CountingAlloc;
 pub use dialog::fatal_message;
 pub use process::{current_process_key, now_filetime};
 

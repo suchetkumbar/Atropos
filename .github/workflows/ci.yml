@@ -62,7 +62,7 @@ jobs:
       # The 10-minute idle run is local-only (runner time); CI runs a 2-minute window
       # against its own baseline (perf/baseline.ci.json), failing on > 20% regression.
       - name: startup + idle
-        run: pwsh scripts/perf.ps1 -Mode startup,idle -Minutes 2 -WarmupSeconds 15 -Renderer ci -Baseline perf/baseline.ci.json -RecordWsOnly
+        run: pwsh scripts/perf.ps1 -Mode startup,idle -Minutes 2 -WarmupSeconds 15 -Renderer ci -Baseline perf/baseline.ci.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

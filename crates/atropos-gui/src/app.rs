@@ -36,23 +36,45 @@ impl AtroposApp {
             atropos_core::platform::windows::now_filetime(),
         );
         tracing::debug!(first_frame_ms = ms, "first frame");
-        if let Some(path) = &self.args.startup_log {
-            let res = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .and_then(|mut f| writeln!(f, "first_frame_ms={ms:.1}"));
-            if let Err(e) = res {
-                tracing::warn!("startup log {}: {e}", path.display());
-            }
-        }
+        self.append_log(&format!("first_frame_ms={ms:.1}"));
         if self.args.exit_after_first_frame {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 }
 
+impl AtroposApp {
+    fn log_heap(&self) {
+        self.append_log(&startup::heap_line(crate::ALLOC.live_bytes()));
+    }
+
+    /// Appends one line to `--startup-log`, if given (perf.ps1 reads it).
+    fn append_log(&self, line: &str) {
+        let Some(path) = &self.args.startup_log else {
+            return;
+        };
+        let res = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| writeln!(f, "{line}"));
+        if let Err(e) = res {
+            tracing::warn!("startup log {}: {e}", path.display());
+        }
+    }
+}
+
 impl eframe::App for AtroposApp {
+    #[cfg(feature = "renderer-glow")]
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.log_heap();
+    }
+
+    #[cfg(feature = "renderer-wgpu")]
+    fn on_exit(&mut self) {
+        self.log_heap();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             TableBuilder::new(ui)

@@ -5,8 +5,9 @@
 .DESCRIPTION
   Modes (comma-separated; 'all' = startup,idle,size,deps):
     startup  Cold start to first frame: median of -Runs launches (one discarded warm-up), via --startup-log.
-    idle     Private working set after -Minutes, and CPU % of one core over that window (window visible, idle).
-             CPU comes from Get-Process TotalProcessorTime deltas, not typeperf, so it works on any locale.
+    idle     After -Minutes with the window visible and idle: Atropos's own heap (budget 40 MB; ADR 0005),
+             the process private working set (tracked for regressions only: it includes the GPU driver),
+             and CPU % of one core. CPU comes from Get-Process TotalProcessorTime deltas, so any locale works.
     size     Release binary sizes (budget 15 MB each).
     deps     No CRT DLL imports (static CRT; Z1). Uses dumpbin located through vswhere.
   Only ever closes the Atropos.exe instances this script started itself (through its own Process objects).
@@ -23,8 +24,7 @@ param(
     [string]$CliExe,
     [string]$Renderer = 'default',
     [string]$Baseline,
-    [switch]$UpdateBaseline,
-    [switch]$RecordWsOnly   # Phase 0: the WS budget is recorded, not enforced.
+    [switch]$UpdateBaseline
 )
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -34,10 +34,12 @@ if (-not $Baseline) { $Baseline = Join-Path $root 'perf\baseline.json' }
 $modes = ($Mode -split ',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }
 if ($modes -contains 'all') { $modes = 'startup', 'idle', 'size', 'deps' }
 
-# Budgets (spec §3.2). Lower is better for every metric.
+# Budgets (spec §3.2; idle memory per ADR 0005). Lower is better for every metric.
+# $null = no budget, but still compared with the baseline for > 20% regressions.
 $budget = [ordered]@{
     startup_ms_median    = 300
-    gui_private_ws_mb    = 40
+    gui_app_heap_mb      = 40
+    gui_private_ws_mb    = $null
     gui_cpu_pct_one_core = 1
     atropos_exe_mb       = 15
     atr_exe_mb           = 15
@@ -62,7 +64,7 @@ if ($modes -contains 'startup') {
         $p = Start-Process -FilePath $Exe -ArgumentList '--startup-log', "`"$log`"", '--exit-after-first-frame' -PassThru
         if (-not $p.WaitForExit(15000)) { Stop-Owned $p; $failures.Add("startup: run $i did not exit within 15 s") }
     }
-    $vals = @(Get-Content $log | ForEach-Object { [double]($_ -replace '^first_frame_ms=', '') }) | Select-Object -Skip 1 | Sort-Object
+    $vals = @(Get-Content $log | Where-Object { $_ -match '^first_frame_ms=' } | ForEach-Object { [double]($_ -replace '^first_frame_ms=', '') }) | Select-Object -Skip 1 | Sort-Object
     Remove-Item $log -ErrorAction SilentlyContinue
     if ($vals.Count -eq 0) { $failures.Add('startup: no first_frame_ms lines were written') }
     else {
@@ -72,7 +74,9 @@ if ($modes -contains 'startup') {
 }
 
 if ($modes -contains 'idle') {
-    $p = Start-Process -FilePath $Exe -PassThru
+    $idleLog = Join-Path ([IO.Path]::GetTempPath()) "atropos-idle-$PID.log"
+    Remove-Item $idleLog -ErrorAction SilentlyContinue
+    $p = Start-Process -FilePath $Exe -ArgumentList '--startup-log', "`"$idleLog`"" -PassThru
     try {
         Start-Sleep -Seconds $WarmupSeconds
         $p.Refresh(); $cpu0 = $p.TotalProcessorTime; $t0 = [Diagnostics.Stopwatch]::StartNew()
@@ -88,6 +92,11 @@ if ($modes -contains 'idle') {
         $result.gui_cpu_pct_one_core = [math]::Round(($p.TotalProcessorTime - $cpu0).TotalMilliseconds / $t0.Elapsed.TotalMilliseconds * 100, 3)
         $result.idle_minutes = $Minutes
     } finally { Stop-Owned $p }
+    # The app writes app_heap_mb= on a clean exit (CloseMainWindow), i.e. at the end of the window.
+    $heap = @(Get-Content $idleLog -ErrorAction SilentlyContinue | Where-Object { $_ -match '^app_heap_mb=' })
+    Remove-Item $idleLog -ErrorAction SilentlyContinue
+    if ($heap.Count -eq 0) { $failures.Add('idle: no app_heap_mb line (Atropos did not exit cleanly)') }
+    else { $result.gui_app_heap_mb = [double]($heap[-1] -replace '^app_heap_mb=', '') }
 }
 
 if ($modes -contains 'size') {
@@ -115,11 +124,8 @@ $rows = foreach ($k in $budget.Keys) {
     if (-not $result.Contains($k)) { continue }
     $m = [double]$result[$k]; $b = $budget[$k]
     $bl = if ($base -and $null -ne $base.$k) { [double]$base.$k } else { $null }
-    $status = 'ok'
-    if ($m -gt $b) {
-        if ($k -eq 'gui_private_ws_mb' -and $RecordWsOnly) { $status = 'OVER (recorded only)' }
-        else { $status = 'OVER BUDGET'; $failures.Add("$k = $m exceeds budget $b") }
-    }
+    $status = if ($null -eq $b) { 'tracked' } else { 'ok' }
+    if ($null -ne $b -and $m -gt $b) { $status = 'OVER BUDGET'; $failures.Add("$k = $m exceeds budget $b") }
     if ($null -ne $bl -and $bl -gt 0 -and $m -gt $bl * 1.2) {
         $status = "$status; REGRESSION"; $failures.Add("$k = $m regressed > 20% vs baseline $bl")
     }

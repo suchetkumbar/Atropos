@@ -10,6 +10,9 @@ pub struct Args {
     pub startup_log: Option<PathBuf>,
     /// `--exit-after-first-frame`: close right after the first frame (perf runs).
     pub exit_after_first_frame: bool,
+    /// `--perf-log <path>`: append `tick_ms=<f32> scan_ms=<f32>` per collector tick and `frame_ms=<f64>` per UI
+    /// update.
+    pub perf_log: Option<PathBuf>,
 }
 
 impl Args {
@@ -21,6 +24,7 @@ impl Args {
             match arg.to_str() {
                 Some("--startup-log") => out.startup_log = it.next().map(PathBuf::from),
                 Some("--exit-after-first-frame") => out.exit_after_first_frame = true,
+                Some("--perf-log") => out.perf_log = it.next().map(PathBuf::from),
                 _ => {}
             }
         }
@@ -46,6 +50,12 @@ mod tests {
         ]));
         assert_eq!(got.startup_log, Some(PathBuf::from(r"C:\Tëmp dir\a.log")));
         assert!(got.exit_after_first_frame);
+    }
+
+    #[test]
+    fn parses_perf_log() {
+        let got = Args::parse(a(&["--perf-log", r"C:\p ü\perf.log"]));
+        assert_eq!(got.perf_log, Some(PathBuf::from(r"C:\p ü\perf.log")));
     }
 
     #[test]

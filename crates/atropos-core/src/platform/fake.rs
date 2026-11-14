@@ -1,26 +1,67 @@
 //! Scripted backend for tests: each `scan()` returns the next pushed frame.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
-use super::{Platform, RawProc, SystemStats};
-use crate::Result;
+use super::{Platform, ProcEnv, RawProc, SystemStats};
+use crate::statics::Statics;
+use crate::{Field, ProcKey, Result};
 
 /// Test backend that replays scripted process lists.
 #[derive(Debug, Default)]
 pub struct FakePlatform {
-    logical_cpus: u32,
+    stats: SystemStats,
+    /// Wall-clock advance per scan, 100 ns ticks.
+    tick_100ns: u64,
     frames: VecDeque<Vec<RawProc>>,
     last: Vec<RawProc>,
+    statics: HashMap<ProcKey, Statics>,
+    statics_calls: usize,
+    envs: HashMap<ProcKey, ProcEnv>,
+    env_calls: usize,
 }
 
 impl FakePlatform {
     /// Creates an empty fake machine with `logical_cpus` CPUs.
+    /// The clock advances one second per scan and RAM is 16 GiB total / 8 GiB used.
     #[must_use]
     pub fn new(logical_cpus: u32) -> Self {
         Self {
-            logical_cpus,
+            stats: SystemStats {
+                logical_cpus,
+                total_ram: 16 << 30,
+                used_ram: 8 << 30,
+                now_100ns: 0,
+            },
+            tick_100ns: 10_000_000,
             ..Self::default()
         }
+    }
+
+    /// Sets how far the fake clock advances per scan (100 ns ticks).
+    pub fn set_tick(&mut self, tick_100ns: u64) {
+        self.tick_100ns = tick_100ns;
+    }
+
+    /// Scripts what `statics(key)` returns; unscripted keys get all-`Unsupported`.
+    pub fn set_statics(&mut self, key: ProcKey, s: Statics) {
+        self.statics.insert(key, s);
+    }
+
+    /// Scripts what `cwd_and_env(key)` returns; unscripted keys are `Unsupported`.
+    pub fn set_env(&mut self, key: ProcKey, env: ProcEnv) {
+        self.envs.insert(key, env);
+    }
+
+    /// How many times `cwd_and_env()` was called.
+    #[must_use]
+    pub fn env_calls(&self) -> usize {
+        self.env_calls
+    }
+
+    /// How many times `statics()` was called.
+    #[must_use]
+    pub fn statics_calls(&self) -> usize {
+        self.statics_calls
     }
 
     /// Queues the process list returned by a future `scan()`.
@@ -36,9 +77,24 @@ impl Platform for FakePlatform {
         }
         out.clear();
         out.extend(self.last.iter().cloned());
-        Ok(SystemStats {
-            logical_cpus: self.logical_cpus,
-        })
+        self.stats.now_100ns += self.tick_100ns;
+        Ok(self.stats)
+    }
+
+    fn statics(&mut self, key: ProcKey) -> Statics {
+        self.statics_calls += 1;
+        self.statics
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| Statics::unavailable(&Field::Unsupported))
+    }
+
+    fn cwd_and_env(&mut self, key: ProcKey) -> Field<ProcEnv> {
+        self.env_calls += 1;
+        self.envs
+            .get(&key)
+            .cloned()
+            .map_or(Field::Unsupported, Field::Ok)
     }
 }
 
@@ -47,17 +103,16 @@ mod tests {
     use super::*;
     use crate::ProcKey;
     use crate::platform::{Platform, RawProc};
-    use std::sync::Arc;
 
     fn p(pid: u32, parent: u32, name: &str) -> RawProc {
-        RawProc {
-            key: ProcKey {
+        RawProc::new(
+            ProcKey {
                 pid,
                 create_time: u64::from(pid) * 10,
             },
-            ppid: parent,
-            image: Arc::from(name),
-        }
+            parent,
+            name,
+        )
     }
 
     #[test]
@@ -69,8 +124,10 @@ mod tests {
         let stats = f.scan(&mut out).unwrap();
         assert_eq!(stats.logical_cpus, 8);
         assert_eq!(out, vec![p(1, 0, "a")]);
-        f.scan(&mut out).unwrap();
+        let t1 = stats.now_100ns;
+        let stats = f.scan(&mut out).unwrap();
         assert_eq!(out, vec![p(2, 0, "b"), p(3, 2, "c")]);
+        assert_eq!(stats.now_100ns - t1, 10_000_000);
     }
 
     #[test]

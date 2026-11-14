@@ -32,3 +32,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 
 [build-dependencies]
 embed-resource = "3.0.12"
+
+[dev-dependencies]
+# egui_kittest turns on egui/accesskit; egui-winit must match in test builds (release is unaffected).
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit"] }
+egui_kittest = { version = "0.32.3", default-features = false }

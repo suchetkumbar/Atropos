@@ -4,10 +4,18 @@
 #![deny(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod collector;
+pub mod cpu;
 pub mod error;
+pub mod filter;
 pub mod model;
 pub mod paths;
 pub mod platform;
+pub mod ring;
+pub mod secrets;
+pub mod snapshot;
+pub mod statics;
+pub mod tree;
 
 pub use error::{CoreError, Result};
 pub use model::{Field, ProcKey};

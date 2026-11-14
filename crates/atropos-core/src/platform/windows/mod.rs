@@ -2,11 +2,18 @@
 
 mod alloc;
 mod dialog;
+mod handle;
+mod peb;
 mod process;
+mod scan;
+mod statics;
+mod time;
 
 pub use alloc::CountingAlloc;
 pub use dialog::fatal_message;
 pub use process::{current_process_key, now_filetime};
+pub use scan::WindowsPlatform;
+pub use time::{LocalTime, local_time};
 
 use windows::Win32::Foundation::FILETIME;
 

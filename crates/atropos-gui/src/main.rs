@@ -8,10 +8,19 @@ compile_error!("enable one of `renderer-glow` / `renderer-wgpu`");
 
 mod app;
 mod args;
+mod details;
 mod fatal;
+mod format;
+mod header;
 mod icon;
+mod keys;
 mod logging;
+mod selection;
 mod startup;
+mod table;
+#[cfg(test)]
+mod test_frame;
+mod view;
 
 use eframe::egui;
 
@@ -45,7 +54,7 @@ fn main() -> std::process::ExitCode {
     let result = eframe::run_native(
         "Atropos",
         options,
-        Box::new(move |_cc| Ok(Box::new(app::AtroposApp::new(args, create_time)))),
+        Box::new(move |cc| Ok(Box::new(app::AtroposApp::new(cc, args, create_time)))),
     );
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,

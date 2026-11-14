@@ -2,7 +2,7 @@
 //! fixture's first stdout line. Tests act **only** on keys obtained this way (safety rule).
 
 use std::io::{BufRead as _, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -58,14 +58,30 @@ pub fn fixture_path(name: &str) -> anyhow::Result<PathBuf> {
 /// # Errors
 /// If the fixture is missing, fails to start, or does not report its key within 5 s.
 pub fn spawn(name: &str, args: &[&str]) -> anyhow::Result<SpawnedFixture> {
-    let path = fixture_path(name)?;
-    let mut child = Command::new(&path)
+    spawn_exe(&fixture_path(name)?, args)
+}
+
+/// Like [`spawn`], for a fixture exe at an explicit path (e.g. a copy under a Unicode name).
+///
+/// # Errors
+/// If the exe fails to start or does not report its key within 5 s.
+pub fn spawn_exe(path: &Path, args: &[&str]) -> anyhow::Result<SpawnedFixture> {
+    spawn_cmd(Command::new(path), args)
+}
+
+/// Like [`spawn_exe`], with a caller-prepared [`Command`] (cwd, environment).
+///
+/// # Errors
+/// If the exe fails to start or does not report its key within 5 s.
+pub fn spawn_cmd(mut cmd: Command, args: &[&str]) -> anyhow::Result<SpawnedFixture> {
+    let name = Path::new(cmd.get_program()).display().to_string();
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .with_context(|| format!("spawn {}", path.display()))?;
+        .with_context(|| format!("spawn {name}"))?;
     let stdout = child.stdout.take().context("no stdout pipe")?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {

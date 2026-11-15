@@ -12,7 +12,7 @@ use atropos_core::engine::policy::{ActionKind, Verdict};
 use atropos_core::platform::windows::{LocalTime, WindowsPlatform};
 use eframe::egui;
 
-use crate::dialog::{self, Answer, Dialog, Kind};
+use crate::dialog::{self, Answer, Dialog, GroupDialog, Kind};
 use crate::toast::{self, Retry, Toasts};
 
 /// What the user asked to do to a process.
@@ -79,9 +79,17 @@ pub enum Next {
 
 /// [`next_step`] under the user's confirmation policy.
 #[must_use]
-pub fn next_step_with(act: Act, verdict: &Verdict, confirm: atropos_core::config::Confirm) -> Next {
+/// A target that would be restarted (`respawns`) always gets the dialog: it carries the warning.
+pub fn next_step_with(
+    act: Act,
+    verdict: &Verdict,
+    confirm: atropos_core::config::Confirm,
+    respawns: bool,
+) -> Next {
     match (act, verdict, confirm) {
-        (Act::Kill | Act::KillTree, Verdict::Allowed, atropos_core::config::Confirm::Risky) => {
+        (Act::Kill | Act::KillTree, Verdict::Allowed, atropos_core::config::Confirm::Risky)
+            if !respawns =>
+        {
             Next::Send
         }
         _ => next_step(act, verdict),
@@ -104,6 +112,8 @@ pub fn next_step(act: Act, verdict: &Verdict) -> Next {
 pub struct Actions {
     exec: Option<Executor>,
     dialog: Option<Dialog>,
+    /// "End everything from `<repo>`" confirmation.
+    group: Option<GroupDialog>,
     /// The act a pending check is for.
     pending: HashMap<ProcKey, Act>,
     /// Names captured when the action started (the process may be gone by the end).
@@ -130,6 +140,7 @@ impl Actions {
         Self {
             exec,
             dialog: None,
+            group: None,
             pending: HashMap::new(),
             names: HashMap::new(),
             status: HashMap::new(),
@@ -200,7 +211,66 @@ impl Actions {
     /// Whether a dialog is open (it freezes the row order).
     #[must_use]
     pub fn holds(&self) -> bool {
-        self.dialog.is_some()
+        self.dialog.is_some() || self.group.is_some()
+    }
+
+    /// Opens the confirmation for ending every process of the repository `repo` (spec §4.8).
+    /// The plan is made here from the frame; the executor re-checks each tree it is sent.
+    pub fn start_group(&mut self, repo: &std::sync::Arc<str>, frame: &Frame) {
+        let groups = atropos_core::projects::groups(&frame.snapshot, &frame.context);
+        let Some(g) = groups.into_iter().find(|g| g.repo == *repo) else {
+            return;
+        };
+        let ctx = atropos_core::engine::policy::Context {
+            snapshot: &frame.snapshot,
+            statics: &frame.statics,
+            services: &[],
+            me: self.me.unwrap_or(ProcKey {
+                pid: 0,
+                create_time: 0,
+            }),
+        };
+        let plan = atropos_core::projects::plan_group_kill(&ctx, &g.members);
+        for key in &plan.roots {
+            let name = frame.snapshot.get(*key).map_or_else(
+                || "process".to_owned(),
+                |p| crate::view::display_name(frame, p).to_owned(),
+            );
+            self.names.insert(*key, name);
+        }
+        self.group = Some(GroupDialog {
+            name: g.name,
+            repo: g.repo,
+            plan,
+        });
+    }
+
+    /// The open group confirmation, if any.
+    #[cfg(test)]
+    #[must_use]
+    pub fn group(&self) -> Option<&GroupDialog> {
+        self.group.as_ref()
+    }
+
+    /// Answers the group confirmation: ends each planned tree, or cancels.
+    pub fn answer_group(&mut self, answer: Answer) {
+        let Some(g) = self.group.take() else {
+            return;
+        };
+        if let Answer::Confirm { force } = answer {
+            let opts = KillOpts {
+                force,
+                grace: self.grace,
+            };
+            for key in g.plan.roots {
+                self.status.insert(key, "Starting…".to_owned());
+                self.send(Request::Kill {
+                    key,
+                    tree: true,
+                    opts,
+                });
+            }
+        }
     }
 
     #[must_use]
@@ -287,15 +357,22 @@ impl Actions {
                     m.retry.clone_from(&retry);
                     self.toasts.push(m, now);
                 }
-                Event::Checked { key, kind, verdict } => {
+                Event::Checked {
+                    key,
+                    kind,
+                    verdict,
+                    respawn,
+                } => {
                     let act = self.pending.remove(&key).unwrap_or(match kind {
                         ActionKind::Kill => Act::Kill,
                         ActionKind::KillTree => Act::KillTree,
                         ActionKind::Suspend => Act::Suspend,
                         ActionKind::Resume => Act::Resume,
                     });
-                    match next_step_with(act, &verdict, self.confirm) {
-                        Next::Dialog(k) => self.dialog = Some(Dialog::new(key, k, verdict)),
+                    match next_step_with(act, &verdict, self.confirm, respawn.is_some()) {
+                        Next::Dialog(k) => {
+                            self.dialog = Some(Dialog::new(key, k, verdict).with_respawn(respawn));
+                        }
                         Next::Send => {
                             let opts = KillOpts {
                                 grace: self.grace,
@@ -457,6 +534,9 @@ impl Actions {
             if let Some(answer) = dialog::show(ctx, d, frame, today) {
                 let (key, kind, console) = (d.key, d.kind, d.console);
                 self.dialog = None;
+                if let Answer::Instead(supervisor) = answer {
+                    self.start(supervisor, Act::KillTree, frame);
+                }
                 if let Answer::Confirm { force } = answer {
                     let opts = KillOpts {
                         force,
@@ -474,6 +554,11 @@ impl Actions {
                     self.status.insert(key, "Starting…".to_owned());
                     self.send(req);
                 }
+            }
+        }
+        if let Some(g) = &self.group {
+            if let Some(answer) = dialog::show_group(ctx, g, frame) {
+                self.answer_group(answer);
             }
         }
         for r in self.toasts.show(ctx, now) {
@@ -541,19 +626,19 @@ mod tests {
         let soft = Verdict::Soft(SoftReason::Shell("explorer.exe".into()));
         let hard = Verdict::Hard(HardReason::SystemPid);
         assert_eq!(
-            next_step_with(Act::Kill, &Verdict::Allowed, Confirm::Risky),
+            next_step_with(Act::Kill, &Verdict::Allowed, Confirm::Risky, false),
             Next::Send
         );
         assert_eq!(
-            next_step_with(Act::KillTree, &soft, Confirm::Risky),
+            next_step_with(Act::KillTree, &soft, Confirm::Risky, false),
             Next::Dialog(Kind::KillTree)
         );
         assert_eq!(
-            next_step_with(Act::Kill, &hard, Confirm::Risky),
+            next_step_with(Act::Kill, &hard, Confirm::Risky, false),
             Next::Dialog(Kind::Kill)
         );
         assert_eq!(
-            next_step_with(Act::Kill, &Verdict::Allowed, Confirm::Always),
+            next_step_with(Act::Kill, &Verdict::Allowed, Confirm::Always, false),
             Next::Dialog(Kind::Kill)
         );
     }
@@ -647,5 +732,84 @@ mod tests {
         let mut a = Actions::new(Some(exec));
         a.start(key, Act::Kill, &frame_with(key));
         pump(&mut a, Actions::holds);
+    }
+
+    #[test]
+    fn a_respawning_target_is_confirmed_even_in_risky_only_mode() {
+        use atropos_core::config::Confirm;
+        let allowed = Verdict::Allowed;
+        assert_eq!(
+            next_step_with(Act::Kill, &allowed, Confirm::Risky, false),
+            Next::Send
+        );
+        assert_eq!(
+            next_step_with(Act::Kill, &allowed, Confirm::Risky, true),
+            Next::Dialog(Kind::Kill)
+        );
+    }
+
+    #[test]
+    fn group_kill_ends_each_allowed_tree_and_skips_the_protected() {
+        use atropos_core::context::Ctx;
+        use atropos_core::platform::SystemStats;
+        use atropos_core::snapshot::build;
+        let k = crate::test_frame::k;
+        let me = k(3);
+        let raws = vec![
+            RawProc::new(k(1), 0, "explorer.exe"),
+            RawProc::new(me, 1, "Atropos.exe"),
+            RawProc::new(k(10), 1, "node.exe"),
+            RawProc::new(k(11), 10, "node.exe"),
+            RawProc::new(k(12), 1, "python.exe"),
+            RawProc::new(k(13), 1, "other.exe"),
+        ];
+        let mut f = FakePlatform::new(1);
+        f.push_frame(raws.clone());
+        let repo: std::sync::Arc<str> = "D:/code/shop".into();
+        let mut frame = crate::test_frame::frame();
+        frame.snapshot = build(None, raws, SystemStats::default());
+        frame.statics = std::sync::Arc::default();
+        frame.context = std::sync::Arc::new(
+            [1, 10, 11, 12]
+                .into_iter()
+                .map(|pid| {
+                    (
+                        k(pid),
+                        Ctx {
+                            repo: Some(repo.clone()),
+                            ..Ctx::default()
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let exec = executor::spawn(Box::new(f), me, Box::new(|| {})).unwrap();
+        let mut a = Actions::new(Some(exec));
+        a.me = Some(me);
+        a.start_group(&repo, &frame);
+        assert!(a.holds());
+        let plan = a.group().unwrap().plan.clone();
+        assert_eq!(plan.roots, vec![k(10), k(12)]);
+        assert_eq!(
+            plan.skipped.len(),
+            1,
+            "explorer.exe needs its own confirmation"
+        );
+        a.answer_group(Answer::Confirm { force: true });
+        assert!(!a.holds());
+        pump(&mut a, |a| a.toasts.len() == 2);
+    }
+
+    #[test]
+    fn cancelling_the_group_dialog_sends_nothing() {
+        let mut a = Actions::new(None);
+        a.start_group(&"nowhere".into(), &crate::test_frame::frame());
+        assert!(!a.holds(), "an unknown repository opens nothing");
+        let f = crate::test_frame::frame_with_context();
+        a.start_group(&r"D:\code\shop".into(), &f);
+        assert!(a.holds());
+        a.answer_group(Answer::Cancel);
+        assert!(!a.holds());
+        assert!(a.status().is_empty());
     }
 }

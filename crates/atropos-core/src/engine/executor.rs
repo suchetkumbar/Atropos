@@ -12,6 +12,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use super::kill::{KillOpts, Outcome, Progress, kill};
 use super::policy::{self, ActionKind, Context, Verdict};
+use super::respawn::{self, Respawn};
 use super::subtree::{TreeReport, kill_tree};
 use super::suspend::{SuspendLedger, Toggle};
 use crate::ProcKey;
@@ -78,6 +79,8 @@ pub enum Event {
         key: ProcKey,
         kind: ActionKind,
         verdict: Verdict,
+        /// For kills: what would start the target again (spec Phase 4 respawn warnings).
+        respawn: Option<Respawn>,
     },
 }
 
@@ -118,6 +121,26 @@ fn kill_console(
         }
     }
     all
+}
+
+/// What would restart `key` after a kill. The supervisor is recognised by its command line, so
+/// the ancestors' statics are read here.
+fn respawn_for(
+    platform: &mut dyn Platform,
+    snap: &Snapshot,
+    statics: &StaticsMap,
+    services: &[crate::ports::ServiceInfo],
+    key: ProcKey,
+) -> Option<Respawn> {
+    let mut all = statics.clone();
+    let mut up = snap.get(key).and_then(|p| p.parent);
+    while let Some(i) = up {
+        let k = snap.procs[i].raw.key;
+        all.entry(k)
+            .or_insert_with(|| Arc::new(platform.statics(k)));
+        up = snap.procs[i].parent;
+    }
+    respawn::check(snap, &all, services, key)
 }
 
 /// Runs one request to completion, emitting progress and exactly one final event.
@@ -182,7 +205,15 @@ pub fn handle(
         }
         Request::Check { kind, .. } => {
             let verdict = policy::check(&ctx, key, kind);
-            emit(Event::Checked { key, kind, verdict });
+            let respawn = matches!(kind, ActionKind::Kill | ActionKind::KillTree)
+                .then(|| respawn_for(platform, &snap, &statics, &services, key))
+                .flatten();
+            emit(Event::Checked {
+                key,
+                kind,
+                verdict,
+                respawn,
+            });
         }
         Request::Kill {
             opts, tree: false, ..
@@ -451,7 +482,7 @@ mod tests {
         );
         assert!(matches!(
             ev.as_slice(),
-            [Event::Checked { key, kind: ActionKind::Kill, verdict: Verdict::Hard(_) }] if *key == k(20)
+            [Event::Checked { key, kind: ActionKind::Kill, verdict: Verdict::Hard(_), .. }] if *key == k(20)
         ));
         let ev = run(
             &mut f,
@@ -465,7 +496,8 @@ mod tests {
             vec![Event::Checked {
                 key: k(10),
                 kind: ActionKind::KillTree,
-                verdict: Verdict::Allowed
+                verdict: Verdict::Allowed,
+                respawn: None,
             }]
         );
         assert_eq!(
@@ -492,5 +524,40 @@ mod tests {
         } = ex;
         drop(requests);
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn check_reports_what_would_respawn_the_target() {
+        use crate::statics::Statics;
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![
+            RawProc::new(ME, 0, "Atropos.exe"),
+            RawProc::new(k(10), 0, "node.exe"),
+            RawProc::new(k(11), 10, "cmd.exe"),
+            RawProc::new(k(12), 11, "node.exe"),
+        ]);
+        f.set_statics(
+            k(10),
+            Statics {
+                cmdline: crate::Field::Ok(Arc::from(
+                    "node x/node_modules/nodemon/bin/nodemon.js app.js",
+                )),
+                ..Statics::unavailable(&crate::Field::Unsupported)
+            },
+        );
+        let check =
+            |f: &mut FakePlatform, key, kind| match run(f, Request::Check { key, kind }).pop() {
+                Some(Event::Checked { respawn, .. }) => respawn,
+                other => panic!("{other:?}"),
+            };
+        assert_eq!(
+            check(&mut f, k(12), ActionKind::Kill),
+            Some(Respawn::Supervisor {
+                key: k(10),
+                name: "nodemon"
+            })
+        );
+        assert_eq!(check(&mut f, k(10), ActionKind::KillTree), None);
+        assert_eq!(check(&mut f, k(12), ActionKind::Suspend), None);
     }
 }

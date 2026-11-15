@@ -51,6 +51,9 @@ pub struct Config {
     pub mask_names: Vec<String>,
     pub theme: Theme,
     pub default_view: View,
+    /// Extra smart-label rules (`[[labels]]`), tried before the built-in ones (spec §4.8).
+    /// Kept last: TOML writes arrays of tables after the plain keys.
+    pub labels: Vec<crate::labels::RuleDef>,
 }
 
 impl Default for Config {
@@ -63,6 +66,7 @@ impl Default for Config {
             mask_names: Vec::new(),
             theme: Theme::System,
             default_view: View::Flat,
+            labels: Vec::new(),
         }
     }
 }
@@ -224,6 +228,38 @@ mod tests {
         let (c, notice) = load(&p);
         assert_eq!(c, Config::default());
         assert!(notice.is_some_and(|n| n.contains("newer")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn user_label_rules_load_and_round_trip() {
+        let d = dir("labels");
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("config.toml");
+        std::fs::write(
+            &p,
+            "grace_secs = 7
+
+[[labels]]
+image = [\"node\"]
+cmdline = \"api/server.js\"
+label = \"Orders API · {project}\"
+
+[[labels]]
+image = [\"python\"]
+markers = [\"manage.py\"]
+label = \"Django\"
+",
+        )
+        .unwrap();
+        let (c, notice) = load(&p);
+        assert_eq!(notice, None);
+        assert_eq!(c.grace_secs, 7);
+        assert_eq!(c.labels.len(), 2);
+        assert_eq!(c.labels[0].cmdline.as_deref(), Some("api/server.js"));
+        assert_eq!(c.labels[1].markers, vec!["manage.py".to_owned()]);
+        save(&p, &c).unwrap();
+        assert_eq!(load(&p), (c, None));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

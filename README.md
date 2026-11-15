@@ -43,7 +43,10 @@ Every command takes `--json` (`"schema": 1`). Exit codes are stable for scripts:
 ## The GUI
 
 - Every process, flat or as a tree, with CPU %, memory (private working set, as Task Manager shows it), threads, handles, disk read/write per second, user and start time; CPU and memory sparklines.
-- Search with the same syntax as `atr find`; `:3000` finds the owner of a port.
+- **Readable names:** "Next.js dev · shop", "Django dev · blog", "cargo run · atropos", "VS Code extension host" instead of five rows of `node.exe` (the executable stays in the tooltip). Rules cover Next.js, Vite, Create React App, Angular, Nuxt, nodemon, ts-node/tsx, Django, Flask, FastAPI/uvicorn, Jupyter, cargo, dotnet, Spring Boot, Gradle, Docker Desktop, WSL, VS Code helpers, language servers and Chrome/Edge.
+- Search with the same syntax as `atr find`; `:3000` finds the owner of a port; labels and `cwd:` are searchable too.
+- **Projects:** processes grouped by the git repository they run in, with "End everything from `<repo>`".
+- **Leftovers:** dev servers still listening on a port after the terminal that started them is gone.
 - Details: executable, command line, parent chain, environment (secrets such as tokens and keys are hidden until you click *Show*), and open ports with Docker/WSL forward badges.
 - Rows hold still under your mouse; the selection follows the process, not the row.
 - `Del` end · `Shift+Del` end tree · `Ctrl+P` suspend/resume · `/` search · `T` tree · `F5` refresh · `?` all shortcuts.
@@ -57,6 +60,19 @@ Every command takes `--json` (`"schema": 1`). Exit codes are stable for scripts:
 - **Subtree kills catch fork storms:** the tree is frozen, contained in a Job Object, and nothing it spawns survives.
 - **Protected list:** core Windows processes, Atropos itself and its parents are never touched; the desktop shell and other users' processes need you to type the name.
 - **Crash-safe:** if Atropos ever crashes while processes are suspended, the next start offers to resume them.
+- **Warns before a pointless kill:** if a Windows service, `nodemon`, `pm2`, `dotnet watch`, `cargo watch`, Task Scheduler or Docker would just start the process again, the dialog says so and offers the right action instead.
+
+## Your own labels
+
+Labels work with no configuration. To add your own, put rules in `%APPDATA%\Atropos\config.toml`; they are tried before the built-in ones, and a broken rule is reported and skipped without affecting the rest.
+
+```toml
+[[labels]]
+image = ["node"]                       # executable name without .exe; omit for any
+cmdline = '(?i)[\\/]api[\\/]server\.js'   # regex searched in the command line (optional)
+markers = ["package.json"]             # files that must exist in the working directory (optional)
+label = "Orders API · {project}"       # {project} = package.json / Cargo.toml name, else the folder
+```
 
 ## Compared with…
 

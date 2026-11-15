@@ -1,0 +1,257 @@
+# Built-in smart labels (spec §4.8). First match wins; user rules from config.toml run first.
+#
+#   image    image names without ".exe", case-insensitive; empty = any image
+#   cmdline  regex (regex-lite syntax) searched in the command line; named groups feed the label
+#   markers  files that must exist in the working directory ("*.sln" = any file with that suffix)
+#   label    template: {project} = package.json / Cargo.toml name, else the folder name;
+#            {group} = a named regex group. A " · " segment whose placeholder is empty is dropped.
+
+# --- language servers (before the editors and runtimes that host them) ---
+[[rule]]
+image = ["rust-analyzer", "rust-analyzer-proc-macro-srv"]
+label = "rust-analyzer"
+
+[[rule]]
+image = ["node", "code", "code - insiders", "cursor"]
+cmdline = '(?i)[\\/]tsserver\.js'
+label = "TypeScript server (tsserver)"
+
+[[rule]]
+image = ["node", "code", "code - insiders", "cursor"]
+cmdline = '(?i)vscode-pylance'
+label = "Pylance"
+
+# --- VS Code helpers ---
+[[rule]]
+image = ["code", "code - insiders"]
+cmdline = '(?i)--utility-sub-type=node\.mojom\.NodeService'
+label = "VS Code extension host"
+
+[[rule]]
+image = ["code", "code - insiders"]
+cmdline = '(?i)--type=(?P<type>[a-z-]+)'
+label = "VS Code {type}"
+
+[[rule]]
+image = ["code", "code - insiders"]
+label = "VS Code"
+
+# --- Node.js frameworks ---
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]next[\\/]dist[\\/](?:bin[\\/]next"?\s+dev\b|server[\\/]lib[\\/]start-server)'
+label = "Next.js dev · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]next[\\/]dist[\\/]bin[\\/]next\b'
+label = "Next.js · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]vite[\\/]bin[\\/]vite\.js'
+label = "Vite dev · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]react-scripts[\\/]scripts[\\/]start\.js'
+label = "Create React App · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]@angular[\\/]cli[\\/]bin[\\/]ng(?:\.js)?"?\s+serve\b'
+label = "Angular dev · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/](?:nuxt|nuxi)[\\/]bin[\\/](?:nuxt|nuxi)\.m?js'
+label = "Nuxt dev · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]nodemon[\\/]bin[\\/]nodemon\.js'
+label = "nodemon · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]pm2[\\/]'
+label = "pm2 · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]ts-node[\\/]dist[\\/]bin'
+label = "ts-node · {project}"
+
+[[rule]]
+image = ["node"]
+cmdline = '(?i)[\\/]tsx[\\/]dist[\\/]'
+label = "tsx · {project}"
+
+# Express and other plain `node server.js` apps: nothing on the command line names the framework.
+[[rule]]
+image = ["node"]
+markers = ["package.json"]
+label = "Node app · {project}"
+
+# --- Python ---
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)\bmanage\.py"?\s+runserver\b'
+label = "Django dev · {project}"
+
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)-m\s+flask\b|[\\/]flask(?:\.exe)?"?\s'
+label = "Flask dev · {project}"
+
+[[rule]]
+image = ["flask"]
+label = "Flask dev · {project}"
+
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)-m\s+fastapi\b|[\\/]fastapi(?:\.exe)?"?\s'
+label = "FastAPI dev · {project}"
+
+[[rule]]
+image = ["fastapi"]
+label = "FastAPI dev · {project}"
+
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)-m\s+uvicorn\b|[\\/]uvicorn(?:\.exe)?"?\s'
+label = "Uvicorn · {project}"
+
+[[rule]]
+image = ["uvicorn"]
+label = "Uvicorn · {project}"
+
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)\bipykernel(?:_launcher)?\b'
+label = "Jupyter kernel"
+
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)\bjupyter[-_ ]?lab\b'
+label = "Jupyter Lab · {project}"
+
+[[rule]]
+image = ["python", "python3", "pythonw", "py"]
+cmdline = '(?i)\b(?:jupyter[-_ ]notebook|notebook)\b'
+label = "Jupyter Notebook · {project}"
+
+[[rule]]
+image = ["jupyter-lab"]
+label = "Jupyter Lab · {project}"
+
+[[rule]]
+image = ["jupyter-notebook", "jupyter"]
+label = "Jupyter Notebook · {project}"
+
+# --- Rust ---
+[[rule]]
+image = ["cargo-watch"]
+label = "cargo watch · {project}"
+
+[[rule]]
+image = ["cargo"]
+cmdline = '(?i)\bcargo(?:\.exe)?"?\s+(?:\+\S+\s+)?watch\b'
+label = "cargo watch · {project}"
+
+[[rule]]
+image = ["cargo"]
+cmdline = '(?i)\bcargo(?:\.exe)?"?\s+(?:\+\S+\s+)?run\b'
+label = "cargo run · {project}"
+
+# --- .NET ---
+[[rule]]
+image = ["dotnet"]
+cmdline = '(?i)\bdotnet(?:\.exe)?"?\s+watch\b|dotnet-watch\.dll'
+label = "dotnet watch · {project}"
+
+[[rule]]
+image = ["dotnet"]
+cmdline = '(?i)\bdotnet(?:\.exe)?"?\s+run\b'
+label = "dotnet run · {project}"
+
+# --- JVM ---
+[[rule]]
+image = ["java", "javaw"]
+cmdline = '(?i)org\.gradle\.launcher\.daemon\.bootstrap\.GradleDaemon\s+(?P<version>[0-9][^\s"]*)'
+label = "Gradle daemon · {version}"
+
+[[rule]]
+image = ["java", "javaw"]
+cmdline = '(?i)org\.gradle\.launcher\.daemon'
+label = "Gradle daemon"
+
+[[rule]]
+image = ["java", "javaw"]
+cmdline = '(?i)spring.*\s-jar\s+"?(?:[^"\s]*[\\/])?(?P<jar>[^"\s\\/]+)\.jar|\s-jar\s+"?(?:[^"\s]*[\\/])?(?P<jar2>[^"\s\\/]+)\.jar.*spring'
+label = "Spring Boot · {jar}{jar2}"
+
+[[rule]]
+image = ["java", "javaw"]
+cmdline = '(?i)\s-jar\s+"?(?:[^"\s]*[\\/])?(?P<jar>[^"\s\\/]+)\.jar'
+label = "Java · {jar}"
+
+# --- Docker Desktop and WSL ---
+[[rule]]
+image = ["docker desktop"]
+label = "Docker Desktop"
+
+[[rule]]
+image = ["com.docker.backend", "com.docker.build", "com.docker.service", "com.docker.dev-envs", "com.docker.extensions"]
+label = "Docker Desktop backend"
+
+[[rule]]
+image = ["docker-proxy"]
+label = "Docker port forward"
+
+[[rule]]
+image = ["wslhost"]
+label = "WSL host"
+
+[[rule]]
+image = ["wslrelay"]
+label = "WSL relay"
+
+[[rule]]
+image = ["wslservice"]
+label = "WSL service"
+
+[[rule]]
+image = ["vmmem", "vmmemwsl"]
+label = "WSL / Hyper-V virtual machine"
+
+# --- Browsers: the profile is shown when the command line carries it ---
+[[rule]]
+image = ["chrome"]
+cmdline = '(?i)--type=renderer\b(?:.*--user-data-dir="?(?:[^"]*?[\\/])?(?P<profile>[^"\\/]+?)"?(?:\s+--|\s*$))?'
+label = "Chrome renderer · {profile}"
+
+[[rule]]
+image = ["chrome"]
+cmdline = '(?i)--type=(?P<type>[a-z-]+)'
+label = "Chrome {type}"
+
+[[rule]]
+image = ["chrome"]
+cmdline = '(?i)--profile-directory="?(?P<profile>[^"]+?)"?(?:\s+--|\s*$)'
+label = "Chrome · {profile}"
+
+[[rule]]
+image = ["msedge"]
+cmdline = '(?i)--type=renderer\b(?:.*--user-data-dir="?(?:[^"]*?[\\/])?(?P<profile>[^"\\/]+?)"?(?:\s+--|\s*$))?'
+label = "Edge renderer · {profile}"
+
+[[rule]]
+image = ["msedge"]
+cmdline = '(?i)--type=(?P<type>[a-z-]+)'
+label = "Edge {type}"
+
+[[rule]]
+image = ["msedge"]
+cmdline = '(?i)--profile-directory="?(?P<profile>[^"]+?)"?(?:\s+--|\s*$)'
+label = "Edge · {profile}"

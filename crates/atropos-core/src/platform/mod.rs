@@ -93,6 +93,11 @@ pub trait Platform: Send {
     /// Reads the working directory and environment of `key` (tier 2, on demand).
     fn cwd_and_env(&mut self, key: ProcKey) -> crate::Field<ProcEnv>;
 
+    /// Reads only the working directory of `key` (labels and project grouping, spec §4.8).
+    fn cwd(&mut self, key: ProcKey) -> crate::Field<Arc<str>> {
+        self.cwd_and_env(key).map(|env| env.cwd)
+    }
+
     /// All TCP and UDP sockets (IPv4 and IPv6) with their owner PIDs.
     ///
     /// # Errors

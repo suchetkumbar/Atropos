@@ -18,11 +18,12 @@ use crate::args::Args;
 use crate::details::{self, DetailEvent, DetailsState};
 use crate::header;
 use crate::keys::{self, Action};
+use crate::projects_bar::{self, BarEvent};
 use crate::selection::{OrderFreeze, Selection};
 use crate::settings::{self, SettingsUi};
 use crate::startup;
 use crate::table::{self, Event, Look};
-use crate::view::{self, Row, Sort, SortKey, ViewOpts};
+use crate::view::{self, Row, Scope, Sort, SortKey, ViewOpts};
 use atropos_core::config::{self, Config, View};
 
 const SEARCH_HINT: &str = "Search   :3000   pid:123   user:me   name:node   cwd:shop";
@@ -66,10 +67,12 @@ pub struct AtroposApp {
 impl AtroposApp {
     pub fn new(cc: &eframe::CreationContext<'_>, args: Args, create_time: u64) -> Self {
         let ctx = cc.egui_ctx.clone();
-        let collector = collector::spawn(
+        let (config, notice) = config::load(&config::path());
+        let collector = collector::spawn_with(
             Box::new(WindowsPlatform::new()),
             // A non-zero delay paints once; `request_repaint()` always paints twice.
             Box::new(move || ctx.request_repaint_after(std::time::Duration::from_millis(1))),
+            config.labels.clone(),
         )
         .inspect_err(|e| tracing::error!("collector thread: {e}"))
         .ok();
@@ -83,8 +86,14 @@ impl AtroposApp {
         });
         let self_key = current_process_key().ok();
         let mut actions = Actions::spawn(&cc.egui_ctx, self_key);
-        let (config, notice) = config::load(&config::path());
         if let Some(n) = notice {
+            tracing::warn!("{n}");
+            actions.notice(n, Instant::now());
+        }
+        // A broken label rule is reported once and skipped; the others still apply (Z3).
+        let bad_rules = atropos_core::labels::check_user(&config.labels);
+        if !bad_rules.is_empty() {
+            let n = format!("config.toml: {}", bad_rules.join("; "));
             tracing::warn!("{n}");
             actions.notice(n, Instant::now());
         }
@@ -192,6 +201,8 @@ impl AtroposApp {
                 .map(|s| std::time::Duration::from_secs_f32(s.clamp(0.5, 10.0))),
             want_ports: self.filter.has_port_term()
                 || (self.details.open && self.details.tab == details::Tab::Ports),
+            want_projects: self.opts.scope == Scope::Projects,
+            want_leftovers: self.opts.scope == Scope::Leftovers,
             ..Interest::default()
         };
         if let Some(c) = &self.collector {
@@ -288,7 +299,38 @@ impl AtroposApp {
                 self.filter = Filter::parse(&self.search);
                 self.changed_view();
             }
-            if ui.checkbox(&mut self.opts.tree, "Tree").changed() {
+            for (scope, text, tip) in [
+                (Scope::All, "All", "Every process"),
+                (
+                    Scope::Projects,
+                    "Projects",
+                    "Processes running inside a git repository, grouped by repository",
+                ),
+                (
+                    Scope::Leftovers,
+                    "Leftovers",
+                    "Dev servers left behind: listening on a port, inside a repository, \
+                     and whatever started them is gone",
+                ),
+            ] {
+                if ui
+                    .selectable_label(self.opts.scope == scope, text)
+                    .on_hover_text(tip)
+                    .clicked()
+                    && self.opts.scope != scope
+                {
+                    self.opts.scope = scope;
+                    self.changed_view();
+                }
+            }
+            ui.separator();
+            if ui
+                .add_enabled(
+                    self.opts.scope == Scope::All,
+                    egui::Checkbox::new(&mut self.opts.tree, "Tree"),
+                )
+                .changed()
+            {
                 self.changed_view();
             }
             if ui
@@ -320,6 +362,30 @@ impl AtroposApp {
                     ));
                 }
             });
+        });
+    }
+
+    /// Header, search bar and (in the Projects scope) the repository strip.
+    fn top_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("bar").show(ctx, |ui| {
+            ui.add_space(4.0);
+            if let Some(f) = self.frame.clone() {
+                header::show(ui, &f);
+                ui.add_space(2.0);
+            }
+            self.top_bar(ui);
+            if let (Scope::Projects, Some(f)) = (self.opts.scope, self.frame.clone()) {
+                let groups = atropos_core::projects::groups(&f.snapshot, &f.context);
+                match projects_bar::show(ui, &groups, self.opts.project.as_ref()) {
+                    Some(BarEvent::Pick(repo)) => {
+                        self.opts.project = repo;
+                        self.changed_view();
+                    }
+                    Some(BarEvent::KillAll(repo)) => self.actions.start_group(&repo, &f),
+                    None => {}
+                }
+            }
+            ui.add_space(2.0);
         });
     }
 
@@ -437,15 +503,7 @@ impl eframe::App for AtroposApp {
         let refresh = self.on_keys(ctx, today);
         self.steer(ctx, refresh);
 
-        egui::TopBottomPanel::top("bar").show(ctx, |ui| {
-            ui.add_space(4.0);
-            if let Some(f) = self.frame.clone() {
-                header::show(ui, &f);
-                ui.add_space(2.0);
-            }
-            self.top_bar(ui);
-            ui.add_space(2.0);
-        });
+        self.top_panel(ctx);
         self.recompute();
         if let (Some(key), Some(f), true) =
             (self.selection.0, self.frame.clone(), self.details.open)
@@ -493,6 +551,13 @@ impl eframe::App for AtroposApp {
                 per_core: self.opts.per_core,
                 today,
             };
+            if self.rows.is_empty() && self.opts.scope == Scope::Leftovers && self.filter.is_empty()
+            {
+                ui.label(
+                    "No leftovers: nothing is listening on a port from inside a repository \
+                     without the process that started it.",
+                );
+            }
             let events = table::show(ui, &frame, &self.rows, look, &self.actions);
             self.pointer_on_table = ui.ui_contains_pointer();
             for e in events {

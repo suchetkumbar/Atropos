@@ -76,5 +76,35 @@ pub fn frame() -> Frame {
         scan_ms: 0.0,
         env: None,
         sockets: None,
+        context: Arc::default(),
+        history: None,
     }
+}
+
+/// [`frame`] with Phase 4 context: 2 is "Next.js dev · shop" in `D:\code\shop`, 4 runs in the
+/// same repository without a label, 3 is "VS Code" outside any repository.
+pub fn frame_with_context() -> Frame {
+    use atropos_core::context::Ctx;
+    let shop = |label: Option<&str>| Ctx {
+        label: label.map(Arc::from),
+        cwd: Some(Arc::from(r"D:\code\shop\")),
+        repo: Some(Arc::from(r"D:\code\shop")),
+    };
+    let mut f = frame();
+    f.context = Arc::new(
+        [
+            (k(2), shop(Some("Next.js dev · shop"))),
+            (k(4), shop(None)),
+            (
+                k(3),
+                Ctx {
+                    label: Some(Arc::from("VS Code")),
+                    ..Ctx::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    f
 }

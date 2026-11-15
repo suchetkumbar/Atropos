@@ -3,5 +3,6 @@
 pub mod executor;
 pub mod kill;
 pub mod policy;
+pub mod respawn;
 pub mod subtree;
 pub mod suspend;

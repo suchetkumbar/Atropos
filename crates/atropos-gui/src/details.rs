@@ -76,6 +76,23 @@ fn overview(ui: &mut egui::Ui, frame: &Frame, key: ProcKey, today: Option<LocalT
             ui.label(RichText::new("Name").weak());
             ui.label(&*p.raw.image);
             ui.end_row();
+            let ctx = frame.context.get(&key);
+            if let Some(label) = ctx.and_then(|c| c.label.as_deref()) {
+                ui.label(RichText::new("Label").weak());
+                ui.label(label);
+                ui.end_row();
+            }
+            if let Some(repo) = ctx.and_then(|c| c.repo.as_deref()) {
+                ui.label(RichText::new("Project").weak());
+                ui.add(
+                    egui::Label::new(format!(
+                        "{} ({repo})",
+                        atropos_core::labels::project::folder_name(repo)
+                    ))
+                    .wrap(),
+                );
+                ui.end_row();
+            }
             ui.label(RichText::new("PID").weak());
             ui.label(key.pid.to_string());
             ui.end_row();
@@ -140,6 +157,32 @@ fn overview(ui: &mut egui::Ui, frame: &Frame, key: ProcKey, today: Option<LocalT
             });
             ui.end_row();
         });
+    history(ui, frame, key);
+}
+
+/// CPU and memory sparklines of the selected process (spec Phase 4), each scaled to its own peak.
+fn history(ui: &mut egui::Ui, frame: &Frame, key: ProcKey) {
+    let Some((_, cpu, mem)) = frame.history.as_ref().filter(|(k, ..)| *k == key) else {
+        return;
+    };
+    let peak = |r: &atropos_core::ring::Ring<{ atropos_core::collector::HISTORY }>| {
+        r.iter().fold(0.0_f32, f32::max)
+    };
+    let last = |r: &atropos_core::ring::Ring<{ atropos_core::collector::HISTORY }>| {
+        r.iter().last().unwrap_or(0.0)
+    };
+    ui.add_space(6.0);
+    ui.label(RichText::new(format!("History ({} updates)", cpu.len())).weak());
+    ui.horizontal(|ui| {
+        ui.label(format!("CPU {:.1} %", last(cpu)))
+            .on_hover_text(format!("Peak {:.1} % of the whole machine", peak(cpu)));
+        crate::header::sparkline_scaled(ui, cpu, crate::header::CPU_COLOR, peak(cpu).max(1.0));
+    });
+    ui.horizontal(|ui| {
+        ui.label(format!("Memory {:.0} MB", last(mem)))
+            .on_hover_text(format!("Peak {:.0} MB (private working set)", peak(mem)));
+        crate::header::sparkline_scaled(ui, mem, crate::header::MEM_COLOR, peak(mem).max(1.0));
+    });
 }
 
 /// `explorer.exe (5408) › node.exe (1234)`: validated ancestors, oldest first.
@@ -437,5 +480,47 @@ mod tests {
         );
         h.run();
         assert!(h.state().revealed.is_empty());
+    }
+
+    fn overview_harness(f: Frame) -> Harness<'static, (Frame, DetailsState)> {
+        Harness::new_ui_state(
+            |ui, (f, st): &mut (Frame, DetailsState)| {
+                show(ui, f, k(2), st, None, &[]);
+            },
+            (f, DetailsState::default()),
+        )
+    }
+
+    #[test]
+    fn overview_shows_label_project_and_history_of_the_selected_process() {
+        use atropos_core::ring::Ring;
+        let mut f = crate::test_frame::frame_with_context();
+        let (mut cpu, mut mem) = (Ring::default(), Ring::default());
+        for v in [1.0, 30.0, 12.5] {
+            cpu.push(v);
+            mem.push(v * 10.0);
+        }
+        f.history = Some((k(2), cpu, mem));
+        let mut h = overview_harness(f);
+        h.run();
+        assert!(h.query_by_label("Next.js dev · shop").is_some());
+        assert!(h.query_by_label_contains("shop (D:").is_some());
+        assert!(h.query_by_label("History (3 updates)").is_some());
+        assert!(h.query_by_label("CPU 12.5 %").is_some());
+        assert!(h.query_by_label("Memory 125 MB").is_some());
+    }
+
+    #[test]
+    fn history_of_another_process_is_not_shown() {
+        let mut f = frame();
+        f.history = Some((
+            k(3),
+            atropos_core::ring::Ring::default(),
+            atropos_core::ring::Ring::default(),
+        ));
+        let mut h = overview_harness(f);
+        h.run();
+        assert!(h.query_by_label_contains("History").is_none());
+        assert!(h.query_by_label("Label").is_none());
     }
 }

@@ -19,6 +19,7 @@ mod header;
 mod icon;
 mod keys;
 mod logging;
+mod projects_bar;
 mod selection;
 mod settings;
 mod startup;

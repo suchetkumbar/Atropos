@@ -9,8 +9,10 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use crate::Field;
 use crate::ProcKey;
+use crate::context::{AsyncDirs, ContextCache, ContextMap, DirLookup, SyncDirs};
+use crate::labels::{Labels, RuleDef};
 use crate::platform::{Platform, ProcEnv, RawProc};
-use crate::ports::Socket;
+use crate::ports::{Socket, TcpState};
 use crate::ring::Ring;
 use crate::snapshot::{Snapshot, build};
 use crate::statics::{StaticsCache, StaticsMap};
@@ -32,6 +34,7 @@ pub enum Visibility {
 
 /// What the UI currently needs from the collector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools)] // independent switches, not a state machine
 pub struct Interest {
     pub visibility: Visibility,
     /// User-chosen tick; clamped to 0.5–10 s.
@@ -41,6 +44,10 @@ pub struct Interest {
     pub refresh_now: bool,
     /// Read sockets every tick (a `:port` search or the Ports tab is active).
     pub want_ports: bool,
+    /// Resolve the repository of every process (the Projects view).
+    pub want_projects: bool,
+    /// Read sockets and resolve the repository of every listener (the Leftovers view).
+    pub want_leftovers: bool,
 }
 
 /// Tick for this interest: 1 s focused, 2 s visible, 5 s minimized, or the clamped override.
@@ -70,8 +77,13 @@ pub struct Frame {
     /// Working directory and environment of `Interest::selected`, read once per selection
     /// (and again on `refresh_now`).
     pub env: Option<(ProcKey, Arc<Field<ProcEnv>>)>,
-    /// All sockets, read this tick when `Interest::want_ports` (else `None`).
+    /// All sockets, read this tick when `Interest::want_ports` or `want_leftovers` (else `None`).
     pub sockets: Option<Arc<Vec<Socket>>>,
+    /// Smart labels, working directories and repositories (spec §4.8).
+    pub context: Arc<ContextMap>,
+    /// CPU % and memory (MiB) history of `Interest::selected`, newest last; restarts when the
+    /// selection changes. Kept for the selected process only, so memory stays bounded.
+    pub history: Option<(ProcKey, Ring<HISTORY>, Ring<HISTORY>)>,
 }
 
 /// Sends `item`, first discarding a frame the UI has not taken yet (drop-oldest). `drain` is the
@@ -100,12 +112,34 @@ pub type Notify = Box<dyn Fn() + Send>;
 /// # Errors
 /// If the OS refuses to start a thread.
 pub fn spawn(platform: Box<dyn Platform>, notify: Notify) -> std::io::Result<Collector> {
+    spawn_with(platform, notify, Vec::new())
+}
+
+/// Like [`spawn`], with the user's label rules (`[[labels]]` in `config.toml`) ahead of the
+/// built-ins. The rules are compiled on the collector thread.
+///
+/// # Errors
+/// If the OS refuses to start a thread.
+pub fn spawn_with(
+    platform: Box<dyn Platform>,
+    notify: Notify,
+    user_rules: Vec<RuleDef>,
+) -> std::io::Result<Collector> {
     let (interest_tx, interest_rx) = crossbeam_channel::unbounded();
     let (frame_tx, frame_rx) = crossbeam_channel::bounded(1);
     let drain = frame_rx.clone();
     let thread = std::thread::Builder::new()
         .name("atropos-collector".into())
-        .spawn(move || run(platform, &interest_rx, &frame_tx, &drain, &notify))?;
+        .spawn(move || {
+            run(
+                platform,
+                &interest_rx,
+                &frame_tx,
+                &drain,
+                &notify,
+                &user_rules,
+            );
+        })?;
     Ok(Collector {
         interest: interest_tx,
         frames: frame_rx,
@@ -122,13 +156,30 @@ fn mem_pct(used: u64, total: u64) -> f32 {
     }
 }
 
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // display-only
+fn mib(bytes: u64) -> f32 {
+    (bytes as f64 / (1024.0 * 1024.0)) as f32
+}
+
+#[allow(clippy::too_many_lines)]
 fn run(
     mut platform: Box<dyn Platform>,
     interest_rx: &Receiver<Interest>,
     frame_tx: &Sender<Arc<Frame>>,
     drain: &Receiver<Arc<Frame>>,
     notify: &Notify,
+    user_rules: &[RuleDef],
 ) {
+    let mut ctx = ContextCache::new(Labels::with_user(user_rules).0);
+    let mut dirs: Box<dyn DirLookup> = match AsyncDirs::spawn(ctx.markers()) {
+        Ok(d) => Box::new(d),
+        Err(e) => {
+            tracing::warn!("directory prober: {e}");
+            Box::new(SyncDirs::new(ctx.markers()))
+        }
+    };
+    let mut context = Arc::new(ContextMap::new());
+    let mut history: Option<(ProcKey, Ring<HISTORY>, Ring<HISTORY>)> = None;
     let mut interest = Interest::default();
     let mut cache = StaticsCache::new();
     let mut statics = Arc::new(StaticsMap::new());
@@ -155,7 +206,7 @@ fn run(
                     None => None,
                 };
                 env_stale = false;
-                let sockets = if interest.want_ports {
+                let sockets = if interest.want_ports || interest.want_leftovers {
                     platform
                         .sockets()
                         .inspect_err(|e| tracing::warn!("sockets: {e}"))
@@ -164,6 +215,36 @@ fn run(
                 } else {
                     None
                 };
+                let listeners: Vec<u32> = match (&sockets, interest.want_leftovers) {
+                    (Some(all), true) => all
+                        .iter()
+                        .filter(|s| s.state == Some(TcpState::Listen))
+                        .map(|s| s.owner)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let want_cwd = |p: &crate::snapshot::Proc| {
+                    interest.want_projects || listeners.contains(&p.raw.key.pid)
+                };
+                if ctx.refresh(
+                    platform.as_mut(),
+                    &snapshot,
+                    &statics,
+                    dirs.as_mut(),
+                    &want_cwd,
+                ) {
+                    context = Arc::new(ctx.map().clone());
+                }
+                history =
+                    interest.selected.and_then(|k| {
+                        let p = snapshot.get(k)?;
+                        let (_, mut cpu, mut mem) = history
+                            .filter(|(hk, ..)| *hk == k)
+                            .unwrap_or((k, Ring::default(), Ring::default()));
+                        cpu.push(p.cpu_pct.unwrap_or(0.0));
+                        mem.push(mib(p.raw.private_ws));
+                        Some((k, cpu, mem))
+                    });
                 let (mut cpu_history, mut mem_history) = prev
                     .as_ref()
                     .map(|f| (f.cpu_history, f.mem_history))
@@ -179,6 +260,8 @@ fn run(
                     scan_ms,
                     env: env.clone(),
                     sockets,
+                    context: Arc::clone(&context),
+                    history,
                 });
                 send_latest(frame_tx, drain, Arc::clone(&frame));
                 notify();
@@ -406,5 +489,47 @@ mod tests {
             .unwrap();
         let _ = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(t.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn frames_carry_labels_and_the_selected_process_history() {
+        let key = |pid| ProcKey {
+            pid,
+            create_time: 1,
+        };
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![
+            RawProc::new(key(10), 0, "wslhost.exe"),
+            RawProc::new(key(11), 0, "a.exe"),
+        ]);
+        let c = spawn(Box::new(f), Box::new(|| {})).unwrap();
+        let first = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            first.context.get(&key(10)).and_then(|c| c.label.as_deref()),
+            Some("WSL host")
+        );
+        assert!(!first.context.contains_key(&key(11)));
+        assert!(first.history.is_none());
+        let select = |k| {
+            c.interest
+                .send(Interest {
+                    selected: Some(k),
+                    refresh_now: true,
+                    ..focused()
+                })
+                .unwrap();
+            c.frames.recv_timeout(Duration::from_secs(5)).unwrap()
+        };
+        let a = select(key(10));
+        let b = select(key(10));
+        let (ka, cpu_a, _) = a.history.unwrap();
+        let (_, cpu_b, mem_b) = b.history.unwrap();
+        assert_eq!(ka, key(10));
+        assert_eq!(cpu_b.len(), cpu_a.len() + 1);
+        assert_eq!(mem_b.len(), cpu_b.len());
+        // A new selection starts a new history.
+        let (kc, cpu_c, _) = select(key(11)).history.unwrap();
+        assert_eq!(kc, key(11));
+        assert_eq!(cpu_c.len(), 1);
     }
 }

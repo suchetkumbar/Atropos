@@ -35,7 +35,12 @@ pub const PAUSED: &str = "⏸";
 
 /// Columns, in order: title, sort key, tooltip.
 pub const COLUMNS: [(&str, SortKey, &str); 10] = [
-    ("Name", SortKey::Name, "Executable name"),
+    (
+        "Name",
+        SortKey::Name,
+        "What the process is: a smart label such as \"Next.js dev · shop\" when Atropos \
+         recognises it, else the executable name",
+    ),
     (
         "PID",
         SortKey::Pid,
@@ -203,7 +208,7 @@ fn cell_texts(frame: &Frame, row: &Row, per_core: bool, today: Option<LocalTime>
         _ => "—".to_owned(),
     };
     [
-        p.raw.image.to_string(),
+        crate::view::display_name(frame, p).to_owned(),
         p.raw.key.pid.to_string(),
         cpu_text(frame, p, row, per_core),
         format::bytes(ws),
@@ -249,9 +254,18 @@ fn row_cells(
             _ => name,
         };
         let name = ui.label(shown);
-        if let Some(path) = st.and_then(|s| s.exe_path.ok()) {
-            name.on_hover_text(&**path);
-        }
+        // A labelled row still says which executable it is.
+        let image = &frame.snapshot.procs[row.idx].raw.image;
+        let labelled = frame
+            .context
+            .get(&row.key)
+            .is_some_and(|c| c.label.is_some());
+        match (labelled, st.and_then(|s| s.exe_path.ok())) {
+            (true, Some(path)) => name.on_hover_text(format!("{image}\n{path}")),
+            (true, None) => name.on_hover_text(&**image),
+            (false, Some(path)) => name.on_hover_text(&**path),
+            (false, None) => name,
+        };
         if let Some(status) = actions.status().get(&row.key) {
             ui.label(RichText::new(status).weak().italics());
         }
@@ -435,5 +449,20 @@ mod tests {
         h.get_by_label("⏵").click();
         h.run();
         assert_eq!(h.query_all_by_label("node.exe").count(), 2);
+    }
+
+    #[test]
+    fn name_column_shows_the_smart_label() {
+        let mut h = harness();
+        h.state_mut().frame = crate::test_frame::frame_with_context();
+        h.state_mut().recompute();
+        h.run();
+        assert!(h.query_by_label("Next.js dev · shop").is_some());
+        assert!(h.query_by_label("VS Code").is_some());
+        // 4 has no label and keeps its image name; 2's image moved to the tooltip.
+        assert_eq!(h.query_all_by_label("node.exe").count(), 1);
+        let s = h.state();
+        let row = s.rows.iter().find(|r| r.key == k(2)).unwrap();
+        assert!(row_text(&s.frame, row, false, None).starts_with("Next.js dev · shop\t2\t"));
     }
 }

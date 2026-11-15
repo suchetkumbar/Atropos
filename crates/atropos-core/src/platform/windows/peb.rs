@@ -144,12 +144,18 @@ fn locate(h: HANDLE, wow64: bool) -> Option<Layout> {
     }
 }
 
-fn read_env(h: HANDLE, wow64: bool) -> Option<ProcEnv> {
+fn read_env(h: HANDLE, wow64: bool, with_env: bool) -> Option<ProcEnv> {
     let l = locate(h, wow64)?;
     if l.params == 0 {
         return None;
     }
     let cwd = read_utf16(h, l.cwd_buf, l.cwd_len)?;
+    if !with_env {
+        return Some(ProcEnv {
+            cwd: Arc::from(String::from_utf16_lossy(&cwd)),
+            vars: Vec::new(),
+        });
+    }
     let size = match l.env_size {
         0 => FALLBACK_ENV_BYTES,
         n => n.min(MAX_ENV_BYTES),
@@ -170,8 +176,8 @@ fn has_exited(h: HANDLE) -> bool {
     ok && code != still
 }
 
-/// Reads the cwd and environment of `key`.
-pub(crate) fn read(key: ProcKey) -> Field<ProcEnv> {
+/// Reads the cwd and (with `with_env`) the environment of `key`.
+pub(crate) fn read(key: ProcKey, with_env: bool) -> Field<ProcEnv> {
     let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ;
     // SAFETY: plain call; the handle is owned by `OwnedHandle`.
     let h = match unsafe { OpenProcess(access, false, key.pid) } {
@@ -207,7 +213,7 @@ pub(crate) fn read(key: ProcKey) -> Field<ProcEnv> {
     // SAFETY: valid out-pointer; the native machine is optional.
     let wow64 = unsafe { IsWow64Process2(h.raw(), &raw mut machine, None) }.is_ok()
         && machine != IMAGE_FILE_MACHINE_UNKNOWN;
-    match read_env(h.raw(), wow64) {
+    match read_env(h.raw(), wow64, with_env) {
         Some(env) => Field::Ok(env),
         None if has_exited(h.raw()) => Field::Gone,
         None => Field::Restricted,

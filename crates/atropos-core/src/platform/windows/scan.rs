@@ -238,7 +238,11 @@ impl Platform for WindowsPlatform {
     }
 
     fn cwd_and_env(&mut self, key: crate::ProcKey) -> crate::Field<crate::platform::ProcEnv> {
-        super::peb::read(key)
+        super::peb::read(key, true)
+    }
+
+    fn cwd(&mut self, key: crate::ProcKey) -> crate::Field<std::sync::Arc<str>> {
+        super::peb::read(key, false).map(|env| env.cwd)
     }
 
     fn pin(

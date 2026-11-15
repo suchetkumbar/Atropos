@@ -74,6 +74,39 @@ pub const COLUMNS: [(&str, SortKey, &str); 10] = [
     ("Started", SortKey::Started, "Start time, local"),
 ];
 
+/// Shown after "Disk W/s" while the GPU toggle is on.
+pub const GPU_COLUMNS: [(&str, SortKey, &str); 2] = [
+    (
+        "GPU %",
+        SortKey::Gpu,
+        "Busiest GPU engine this process uses (3D, copy, video …), like Task Manager. \
+         \"—\": no GPU counters on this machine.",
+    ),
+    (
+        "GPU mem",
+        SortKey::GpuMem,
+        "Dedicated GPU memory in use by this process",
+    ),
+];
+const GPU_WIDTH: f32 = 64.0;
+
+/// The columns in display order for this look.
+fn columns(gpu: bool) -> Vec<(&'static str, SortKey, &'static str)> {
+    let mut c = COLUMNS.to_vec();
+    if gpu {
+        c.splice(8..8, GPU_COLUMNS);
+    }
+    c
+}
+
+/// GPU % and GPU memory cells: "—" when GPU counters were not sampled.
+fn gpu_texts(frame: &Frame, p: &Proc) -> [String; 2] {
+    match crate::view::gpu_of(frame, p) {
+        Some(g) => [format::pct(Some(g.util_pct)), format::bytes(g.dedicated)],
+        None => ["—".to_owned(), "—".to_owned()],
+    }
+}
+
 /// Starting widths: Name, then PID … User; Started takes the remaining space.
 const NAME_WIDTH: f32 = 240.0;
 const WIDTHS: [f32; 8] = [60.0, 56.0, 76.0, 56.0, 64.0, 72.0, 72.0, 96.0];
@@ -86,6 +119,8 @@ pub struct Look {
     /// CPU % relative to one core (htop-style) instead of the whole machine.
     pub per_core: bool,
     pub today: Option<LocalTime>,
+    /// Show the GPU columns.
+    pub gpu: bool,
 }
 
 fn cpu_text(frame: &Frame, p: &Proc, row: &Row, per_core: bool) -> String {
@@ -124,12 +159,17 @@ pub fn show(
         .resizable(true)
         .sense(egui::Sense::click())
         .column(Column::initial(NAME_WIDTH).at_least(120.0).clip(true));
-    for w in WIDTHS {
+    for (i, w) in WIDTHS.into_iter().enumerate() {
+        if i == 7 && look.gpu {
+            for _ in GPU_COLUMNS {
+                tb = tb.column(Column::initial(GPU_WIDTH).at_least(40.0).clip(true));
+            }
+        }
         tb = tb.column(Column::initial(w).at_least(40.0).clip(true));
     }
     tb = tb.column(Column::remainder().at_least(80.0).clip(true));
     tb.header(ROW_HEIGHT, |mut header| {
-        for (title, key, tip) in COLUMNS {
+        for (title, key, tip) in columns(look.gpu) {
             header.col(|ui| {
                 let arrow = match look.sort {
                     Sort {
@@ -270,7 +310,10 @@ fn row_cells(
             ui.label(RichText::new(status).weak().italics());
         }
     });
-    for text in numbers {
+    let gpu = look
+        .gpu
+        .then(|| gpu_texts(frame, &frame.snapshot.procs[row.idx]));
+    for text in numbers.into_iter().chain(gpu.into_iter().flatten()) {
         tr.col(|ui| {
             right(ui, text);
         });
@@ -340,6 +383,7 @@ mod tests {
                         sort: s.opts.sort,
                         per_core: false,
                         today: None,
+                        gpu: s.opts.gpu,
                     };
                     for e in show(ui, &s.frame, &s.rows, look, &s.actions) {
                         match e {
@@ -464,5 +508,42 @@ mod tests {
         let s = h.state();
         let row = s.rows.iter().find(|r| r.key == k(2)).unwrap();
         assert!(row_text(&s.frame, row, false, None).starts_with("Next.js dev · shop\t2\t"));
+    }
+
+    #[test]
+    fn gpu_columns_appear_only_with_the_toggle_and_show_a_dash_without_counters() {
+        let mut h = harness();
+        h.run();
+        assert!(h.query_by_label_contains("GPU %").is_none());
+        let dashes = h.query_all_by_label("—").count();
+        h.state_mut().opts.gpu = true;
+        h.run();
+        assert!(h.query_by_label_contains("GPU %").is_some());
+        assert!(h.query_by_label_contains("GPU mem").is_some());
+        // No GPU counters on this machine: two more dashes per row (5 rows).
+        assert_eq!(h.query_all_by_label("—").count(), dashes + 10);
+    }
+
+    #[test]
+    fn gpu_cells_show_utilisation_and_dedicated_memory() {
+        use atropos_core::gpu::GpuUsage;
+        let mut h = harness();
+        h.state_mut().opts.gpu = true;
+        h.state_mut().frame.gpu = Some(std::sync::Arc::new(
+            [(
+                k(2),
+                GpuUsage {
+                    util_pct: 42.5,
+                    dedicated: 3 * 1024 * 1024,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        ));
+        h.run();
+        assert!(h.query_by_label("42.5").is_some());
+        assert!(h.query_by_label(&format::bytes(3 * 1024 * 1024)).is_some());
+        // Processes absent from the counters use no GPU.
+        assert!(h.query_all_by_label("0.0").count() >= 4);
     }
 }

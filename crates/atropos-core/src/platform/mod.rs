@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use crate::engine::kill::Strategy;
+use crate::gpu::GpuSample;
 use crate::pin::{Access, Job, PinError, Pinned};
 use crate::ports::{ServiceInfo, Socket};
 use crate::statics::Statics;
@@ -103,6 +104,18 @@ pub trait Platform: Send {
     /// # Errors
     /// If the OS tables cannot be read.
     fn sockets(&mut self) -> Result<Vec<Socket>>;
+
+    /// GPU utilisation and dedicated memory per PID (PDH). The first call starts sampling, so
+    /// utilisation may be missing until the next call.
+    ///
+    /// # Errors
+    /// `Unsupported` without GPU counters (no GPU, basic display adapter, some VMs / RDP).
+    fn gpu(&mut self) -> Result<Vec<GpuSample>> {
+        Err(crate::CoreError::Unsupported)
+    }
+
+    /// Releases what [`gpu`](Self::gpu) keeps open; called when GPU figures are no longer shown.
+    fn gpu_stop(&mut self) {}
 
     /// Running services and the PIDs hosting them.
     ///

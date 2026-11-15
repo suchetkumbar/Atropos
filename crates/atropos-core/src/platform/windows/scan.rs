@@ -176,6 +176,8 @@ pub struct WindowsPlatform {
     /// `atr.exe`, which delivers console Ctrl+C (`atr.exe __ctrl-c <pid> <create_time>`).
     /// `None`: the console strategy is unavailable and stops escalate to force (Z1).
     ctrl_c_helper: Option<std::path::PathBuf>,
+    /// Open while GPU figures are shown (`Platform::gpu` … `gpu_stop`).
+    gpu: Option<super::gpu::GpuQuery>,
 }
 
 impl WindowsPlatform {
@@ -185,6 +187,7 @@ impl WindowsPlatform {
             buf: vec![0; INITIAL_BYTES / 8],
             sids: super::statics::SidCache::new(),
             ctrl_c_helper: None,
+            gpu: None,
         }
     }
 }
@@ -239,6 +242,23 @@ impl Platform for WindowsPlatform {
 
     fn cwd_and_env(&mut self, key: crate::ProcKey) -> crate::Field<crate::platform::ProcEnv> {
         super::peb::read(key, true)
+    }
+
+    fn gpu(&mut self) -> Result<Vec<crate::gpu::GpuSample>> {
+        let q = match &mut self.gpu {
+            Some(q) => q,
+            None => self.gpu.insert(super::gpu::GpuQuery::open()?),
+        };
+        let r = q.sample();
+        if r.is_err() {
+            // Reopen next time: the counter objects may have gone away (driver reset).
+            self.gpu = None;
+        }
+        r
+    }
+
+    fn gpu_stop(&mut self) {
+        self.gpu = None;
     }
 
     fn cwd(&mut self, key: crate::ProcKey) -> crate::Field<std::sync::Arc<str>> {

@@ -186,4 +186,122 @@ mod tests {
         let buf: Vec<u64> = vec![0x3E8 | (1 << 32), 0x2 | (3 << 32)];
         assert_eq!(rows::<MIB_UDPROW_OWNER_PID>(&buf).len(), 1);
     }
+
+    /// Phase 5 measurement (spec: per-process network only if `GetPerTcpConnectionEStats` is
+    /// cheap enough). Read-only for every connection but one loopback pair this test opens
+    /// itself; collection is enabled (`SetPerTcpConnectionEStats`) only on that pair.
+    /// `cargo test --release -p atropos-core --lib estats_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measures TCP EStats on this machine; prints results"]
+    fn estats_cost() {
+        use std::io::{Read, Write};
+        use windows::Win32::NetworkManagement::IpHelper::{
+            GetPerTcpConnectionEStats, MIB_TCPROW_LH, MIB_TCPROW_LH_0, SetPerTcpConnectionEStats,
+            TCP_ESTATS_DATA_ROD_v0, TCP_ESTATS_DATA_RW_v0, TcpConnectionEstatsData,
+        };
+
+        fn bytes_of<T>(v: &mut T) -> &mut [u8] {
+            // SAFETY: plain-old-data FFI struct viewed as bytes for the call.
+            unsafe {
+                std::slice::from_raw_parts_mut(std::ptr::from_mut::<T>(v).cast(), size_of::<T>())
+            }
+        }
+        let row_of = |l: SocketAddr, r: SocketAddr| {
+            let ip = |a: SocketAddr| match a.ip() {
+                IpAddr::V4(v) => u32::from_ne_bytes(v.octets()),
+                IpAddr::V6(_) => 0,
+            };
+            let port = |a: SocketAddr| u32::from(a.port().to_be());
+            MIB_TCPROW_LH {
+                Anonymous: MIB_TCPROW_LH_0 {
+                    dwState: TCP_ESTABLISHED,
+                },
+                dwLocalAddr: ip(l),
+                dwLocalPort: port(l),
+                dwRemoteAddr: ip(r),
+                dwRemotePort: port(r),
+            }
+        };
+        let read = |row: &MIB_TCPROW_LH| {
+            let mut rw = TCP_ESTATS_DATA_RW_v0::default();
+            let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
+            // SAFETY: `row` is a valid row; the buffers are the documented v0 structs.
+            let st = unsafe {
+                GetPerTcpConnectionEStats(
+                    row,
+                    TcpConnectionEstatsData,
+                    Some(bytes_of(&mut rw)),
+                    0,
+                    None,
+                    0,
+                    Some(bytes_of(&mut rod)),
+                    0,
+                )
+            };
+            (st, rw.EnableCollection, rod.DataBytesIn, rod.DataBytesOut)
+        };
+
+        // Our own loopback connection.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let own = row_of(client.local_addr().unwrap(), client.peer_addr().unwrap());
+        println!("own, before enabling: {:?}", read(&own));
+        let mut enable = TCP_ESTATS_DATA_RW_v0 {
+            EnableCollection: true,
+        };
+        // SAFETY: `own` is this test's own connection; the buffer is the v0 RW struct.
+        let set = unsafe {
+            SetPerTcpConnectionEStats(
+                &raw const own,
+                TcpConnectionEstatsData,
+                bytes_of(&mut enable),
+                0,
+                0,
+            )
+        };
+        println!("SetPerTcpConnectionEStats(own) = {set} (5 = access denied: needs elevation)");
+        client.write_all(&vec![7u8; 100_000]).unwrap();
+        let mut buf = vec![0u8; 100_000];
+        server.read_exact(&mut buf).unwrap();
+        println!("own, after 100 kB: {:?}", read(&own));
+
+        // Read-only cost over every established IPv4 connection on the machine.
+        // SAFETY: `ptr` is `None` or an 8-aligned buffer of `*size` bytes.
+        let t4 = fetch("GetExtendedTcpTable", |ptr, size| unsafe {
+            GetExtendedTcpTable(
+                ptr,
+                size,
+                false,
+                u32::from(AF_INET.0),
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            )
+        })
+        .unwrap();
+        let est: Vec<MIB_TCPROW_LH> = rows::<MIB_TCPROW_OWNER_PID>(&t4)
+            .into_iter()
+            .filter(|r| r.dwState == TCP_ESTABLISHED)
+            .map(|r| MIB_TCPROW_LH {
+                Anonymous: MIB_TCPROW_LH_0 { dwState: r.dwState },
+                dwLocalAddr: r.dwLocalAddr,
+                dwLocalPort: r.dwLocalPort,
+                dwRemoteAddr: r.dwRemoteAddr,
+                dwRemotePort: r.dwRemotePort,
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        let results: Vec<_> = est.iter().map(read).collect();
+        let took = t.elapsed();
+        let ok = results.iter().filter(|r| r.0 == 0).count();
+        let collecting = results.iter().filter(|r| r.1).count();
+        let with_bytes = results.iter().filter(|r| r.2 + r.3 > 0).count();
+        println!(
+            "{} established IPv4 connections: {took:?} total, {:?} each; ok {ok}, collection \
+             enabled on {collecting}, non-zero byte counts on {with_bytes}",
+            est.len(),
+            took.checked_div(u32::try_from(est.len().max(1)).unwrap())
+                .unwrap()
+        );
+    }
 }

@@ -11,6 +11,7 @@ pub mod cpu;
 pub mod engine;
 pub mod error;
 pub mod filter;
+pub mod gpu;
 pub mod journal;
 pub mod labels;
 pub mod model;
@@ -24,6 +25,7 @@ pub mod secrets;
 pub mod snapshot;
 pub mod statics;
 pub mod tree;
+pub mod treemap;
 
 pub use error::{CoreError, Result};
 pub use model::{Field, ProcKey};

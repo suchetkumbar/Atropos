@@ -23,6 +23,11 @@ pub fn k(pid: u32) -> ProcKey {
 }
 
 pub fn frame() -> Frame {
+    frame_mem([100, 300, 200, 50, 10])
+}
+
+/// [`frame`] with these private working sets for PIDs 1, 2, 3, 4, 9.
+pub fn frame_mem(ws: [u64; 5]) -> Frame {
     let mk = |pid, ppid, name: &str, cpu: u64, ws: u64| {
         let mut r = RawProc::new(k(pid), ppid, name);
         r.cpu_100ns = cpu;
@@ -38,11 +43,11 @@ pub fn frame() -> Frame {
     };
     let procs = |cpu: [u64; 5]| {
         vec![
-            mk(1, 0, "explorer.exe", cpu[0], 100),
-            mk(2, 1, "node.exe", cpu[1], 300),
-            mk(3, 1, "Code.exe", cpu[2], 200),
-            mk(4, 2, "node.exe", cpu[3], 50),
-            mk(9, 0, "svchost.exe", cpu[4], 10),
+            mk(1, 0, "explorer.exe", cpu[0], ws[0]),
+            mk(2, 1, "node.exe", cpu[1], ws[1]),
+            mk(3, 1, "Code.exe", cpu[2], ws[2]),
+            mk(4, 2, "node.exe", cpu[3], ws[3]),
+            mk(9, 0, "svchost.exe", cpu[4], ws[4]),
         ]
     };
     let s1 = build(None, procs([0; 5]), stats(10_000_000));
@@ -78,6 +83,7 @@ pub fn frame() -> Frame {
         sockets: None,
         context: Arc::default(),
         history: None,
+        gpu: None,
     }
 }
 

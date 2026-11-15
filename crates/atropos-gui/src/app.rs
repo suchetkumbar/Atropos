@@ -15,6 +15,7 @@ use eframe::egui;
 
 use crate::actions::{Act, Actions};
 use crate::args::Args;
+use crate::blast::{self, BlastEvent, BlastState};
 use crate::details::{self, DetailEvent, DetailsState};
 use crate::header;
 use crate::keys::{self, Action};
@@ -62,6 +63,8 @@ pub struct AtroposApp {
     settings: SettingsUi,
     /// Processes a crashed previous run left suspended (asked once at start).
     resume_offer: Option<crate::crash::ResumeOffer>,
+    /// Blast Radius zoom and layout.
+    blast: BlastState,
 }
 
 impl AtroposApp {
@@ -146,6 +149,7 @@ impl AtroposApp {
             config,
             settings: SettingsUi::default(),
             resume_offer,
+            blast: BlastState::default(),
         }
     }
 
@@ -203,6 +207,11 @@ impl AtroposApp {
                 || (self.details.open && self.details.tab == details::Tab::Ports),
             want_projects: self.opts.scope == Scope::Projects,
             want_leftovers: self.opts.scope == Scope::Leftovers,
+            want_gpu: if self.opts.scope == Scope::Blast {
+                self.blast.measure == blast::Measure::Gpu
+            } else {
+                self.opts.gpu
+            },
             ..Interest::default()
         };
         if let Some(c) = &self.collector {
@@ -312,6 +321,17 @@ impl AtroposApp {
                     "Dev servers left behind: listening on a port, inside a repository, \
                      and whatever started them is gone",
                 ),
+                (
+                    Scope::Blast,
+                    "Blast Radius",
+                    "The process tree as a map: each block is sized by the memory of the \
+                     process and everything it started, and coloured by CPU",
+                ),
+                (
+                    Scope::Disk,
+                    "Disk",
+                    "Processes reading or writing the disk right now, busiest first",
+                ),
             ] {
                 if ui
                     .selectable_label(self.opts.scope == scope, text)
@@ -336,6 +356,16 @@ impl AtroposApp {
             if ui
                 .checkbox(&mut self.opts.per_core, "Per-core CPU")
                 .on_hover_text("100 % = one full core (htop style) instead of the whole machine")
+                .changed()
+            {
+                self.dirty = true;
+            }
+            if ui
+                .add_enabled(
+                    self.opts.scope != Scope::Blast,
+                    egui::Checkbox::new(&mut self.opts.gpu, "GPU"),
+                )
+                .on_hover_text("Show GPU use and GPU memory per process (read only while shown)")
                 .changed()
             {
                 self.dirty = true;
@@ -452,6 +482,53 @@ impl AtroposApp {
         refresh
     }
 
+    /// The table, or the treemap (Blast Radius) or the ranked list (Disk) in those scopes.
+    fn central(
+        &mut self,
+        ui: &mut egui::Ui,
+        today: Option<atropos_core::platform::windows::LocalTime>,
+    ) {
+        let Some(frame) = self.frame.clone() else {
+            ui.centered_and_justified(|ui| ui.label("Reading processes…"));
+            return;
+        };
+        let look = Look {
+            selected: self.selection.0,
+            sort: self.opts.sort,
+            per_core: self.opts.per_core,
+            today,
+            gpu: self.opts.gpu,
+        };
+        if self.rows.is_empty() && self.opts.scope == Scope::Leftovers && self.filter.is_empty() {
+            ui.label(
+                "No leftovers: nothing is listening on a port from inside a repository \
+                 without the process that started it.",
+            );
+        }
+        if self.opts.scope == Scope::Blast {
+            self.pointer_on_table = false;
+            for e in blast::show(ui, &frame, &mut self.blast, self.selection.0) {
+                match e {
+                    BlastEvent::Select(k) => self.selection.0 = Some(k),
+                    BlastEvent::Zoom(z) => self.blast.zoom = z,
+                }
+            }
+            return;
+        }
+        if self.opts.scope == Scope::Disk {
+            self.pointer_on_table = false;
+            if let Some(k) = crate::disk::show(ui, &frame, &self.rows, self.selection.0) {
+                self.selection.0 = Some(k);
+            }
+            return;
+        }
+        let events = table::show(ui, &frame, &self.rows, look, &self.actions);
+        self.pointer_on_table = ui.ui_contains_pointer();
+        for e in events {
+            self.on_event(e);
+        }
+    }
+
     /// Applies and saves changed settings (the file is created only now, Z3).
     fn apply_settings(&mut self, ctx: &egui::Context, now: Instant) {
         ctx.set_theme(settings::theme(self.config.theme));
@@ -540,30 +617,7 @@ impl eframe::App for AtroposApp {
                     }
                 });
             });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let Some(frame) = self.frame.clone() else {
-                ui.centered_and_justified(|ui| ui.label("Reading processes…"));
-                return;
-            };
-            let look = Look {
-                selected: self.selection.0,
-                sort: self.opts.sort,
-                per_core: self.opts.per_core,
-                today,
-            };
-            if self.rows.is_empty() && self.opts.scope == Scope::Leftovers && self.filter.is_empty()
-            {
-                ui.label(
-                    "No leftovers: nothing is listening on a port from inside a repository \
-                     without the process that started it.",
-                );
-            }
-            let events = table::show(ui, &frame, &self.rows, look, &self.actions);
-            self.pointer_on_table = ui.ui_contains_pointer();
-            for e in events {
-                self.on_event(e);
-            }
-        });
+        egui::CentralPanel::default().show(ctx, |ui| self.central(ui, today));
         if let Some(f) = self.frame.clone() {
             self.actions.show(ctx, &f, today, now);
         }

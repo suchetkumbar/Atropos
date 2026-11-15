@@ -47,6 +47,9 @@ Every command takes `--json` (`"schema": 1`). Exit codes are stable for scripts:
 - Search with the same syntax as `atr find`; `:3000` finds the owner of a port; labels and `cwd:` are searchable too.
 - **Projects:** processes grouped by the git repository they run in, with "End everything from `<repo>`".
 - **Leftovers:** dev servers still listening on a port after the terminal that started them is gone.
+- **Blast Radius:** the whole process tree as a treemap. Each block is sized by the memory of a process and everything it started, and coloured by CPU. Blocks hold still until something grows by more than 10 %. Click to select, double-click to zoom into a subtree, and `Del` / `Shift+Del` / `Ctrl+P` work right in the map. A toggle switches to GPU memory and GPU use.
+- **GPU columns:** GPU % (busiest engine, like Task Manager) and dedicated GPU memory per process, read only while shown. Machines without GPU counters (VMs, remote sessions, basic display adapters) show "—".
+- **Disk:** processes reading or writing right now, busiest first, with read/write bars. There is no per-process network view: Windows reports per-connection traffic only to administrators ([ADR 0008](docs/adr/0008-no-per-process-network.md)).
 - Details: executable, command line, parent chain, environment (secrets such as tokens and keys are hidden until you click *Show*), and open ports with Docker/WSL forward badges.
 - Rows hold still under your mouse; the selection follows the process, not the row.
 - `Del` end · `Shift+Del` end tree · `Ctrl+P` suspend/resume · `/` search · `T` tree · `F5` refresh · `?` all shortcuts.

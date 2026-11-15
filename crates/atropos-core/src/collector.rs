@@ -10,6 +10,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crate::Field;
 use crate::ProcKey;
 use crate::context::{AsyncDirs, ContextCache, ContextMap, DirLookup, SyncDirs};
+use crate::gpu::{Attribution, GpuMap};
 use crate::labels::{Labels, RuleDef};
 use crate::platform::{Platform, ProcEnv, RawProc};
 use crate::ports::{Socket, TcpState};
@@ -48,6 +49,8 @@ pub struct Interest {
     pub want_projects: bool,
     /// Read sockets and resolve the repository of every listener (the Leftovers view).
     pub want_leftovers: bool,
+    /// Sample GPU counters (GPU columns or the GPU treemap are visible).
+    pub want_gpu: bool,
 }
 
 /// Tick for this interest: 1 s focused, 2 s visible, 5 s minimized, or the clamped override.
@@ -71,8 +74,9 @@ pub struct Frame {
     pub mem_history: Ring<HISTORY>,
     /// How long this tick's scan + build + statics took.
     pub tick_ms: f32,
-    /// The part of `tick_ms` spent in `Platform::scan` (the OS call, spec §3.3). The budget
-    /// (≤ 5 ms p95) applies to `tick_ms - scan_ms`; the OS call is tracked separately (ADR 0007).
+    /// The part of `tick_ms` spent in the OS calls `Platform::scan` and `Platform::gpu` (spec
+    /// §3.3). The budget (≤ 5 ms p95) applies to `tick_ms - scan_ms`; OS time is tracked
+    /// separately (ADR 0007).
     pub scan_ms: f32,
     /// Working directory and environment of `Interest::selected`, read once per selection
     /// (and again on `refresh_now`).
@@ -84,6 +88,9 @@ pub struct Frame {
     /// CPU % and memory (MiB) history of `Interest::selected`, newest last; restarts when the
     /// selection changes. Kept for the selected process only, so memory stays bounded.
     pub history: Option<(ProcKey, Ring<HISTORY>, Ring<HISTORY>)>,
+    /// GPU figures per process, when `Interest::want_gpu` and the machine has GPU counters
+    /// (else `None`, shown as "—").
+    pub gpu: Option<Arc<GpuMap>>,
 }
 
 /// Sends `item`, first discarding a frame the UI has not taken yet (drop-oldest). `drain` is the
@@ -186,12 +193,14 @@ fn run(
     let mut prev: Option<Arc<Frame>> = None;
     let mut env: Option<(ProcKey, Arc<Field<ProcEnv>>)> = None;
     let mut env_stale = false;
+    let mut attribution = Attribution::new();
+    let mut gpu_on = false;
     loop {
         let started = Instant::now();
         let mut raw: Vec<RawProc> =
             Vec::with_capacity(prev.as_ref().map_or(256, |f| f.snapshot.procs.len() + 32));
         let scanned = platform.scan(&mut raw);
-        let scan_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let mut scan_ms = started.elapsed().as_secs_f32() * 1000.0;
         match scanned {
             Ok(stats) => {
                 let snapshot = build(prev.as_ref().map(|f| &f.snapshot), raw, stats);
@@ -206,6 +215,27 @@ fn run(
                     None => None,
                 };
                 env_stale = false;
+                let gpu = if interest.want_gpu {
+                    let t = Instant::now();
+                    let samples = platform.gpu();
+                    scan_ms += t.elapsed().as_secs_f32() * 1000.0;
+                    match samples {
+                        Ok(s) => Some(Arc::new(attribution.attribute(&s, &snapshot))),
+                        Err(e) => {
+                            if !gpu_on {
+                                tracing::debug!("gpu: {e}");
+                            }
+                            None
+                        }
+                    }
+                } else {
+                    if gpu_on {
+                        platform.gpu_stop();
+                        attribution.reset();
+                    }
+                    None
+                };
+                gpu_on = interest.want_gpu;
                 let sockets = if interest.want_ports || interest.want_leftovers {
                     platform
                         .sockets()
@@ -262,6 +292,7 @@ fn run(
                     sockets,
                     context: Arc::clone(&context),
                     history,
+                    gpu,
                 });
                 send_latest(frame_tx, drain, Arc::clone(&frame));
                 notify();
@@ -474,6 +505,65 @@ mod tests {
             .unwrap();
         let next = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(next.sockets.as_ref().map(|s| s.len()), Some(1));
+    }
+
+    fn gpu_fake(gpu: Option<Vec<crate::gpu::GpuSample>>) -> Box<FakePlatform> {
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![RawProc::new(
+            ProcKey {
+                pid: 10,
+                create_time: 1,
+            },
+            0,
+            "game.exe",
+        )]);
+        f.gpu = gpu;
+        Box::new(f)
+    }
+
+    fn want_gpu(c: &Collector, on: bool) -> Arc<Frame> {
+        c.interest
+            .send(Interest {
+                want_gpu: on,
+                refresh_now: true,
+                ..focused()
+            })
+            .unwrap();
+        c.frames.recv_timeout(Duration::from_secs(5)).unwrap()
+    }
+
+    #[test]
+    fn gpu_is_sampled_only_while_wanted() {
+        let sample = crate::gpu::GpuSample {
+            pid: 10,
+            util_pct: 40.0,
+            dedicated: 1 << 20,
+        };
+        let c = spawn(gpu_fake(Some(vec![sample])), Box::new(|| {})).unwrap();
+        let first = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(first.gpu.is_none());
+        let on = want_gpu(&c, true);
+        let key = ProcKey {
+            pid: 10,
+            create_time: 1,
+        };
+        assert_eq!(
+            on.gpu
+                .as_ref()
+                .and_then(|g| g.get(&key))
+                .map(|u| u.util_pct),
+            Some(40.0)
+        );
+        assert!(want_gpu(&c, false).gpu.is_none());
+    }
+
+    #[test]
+    fn a_machine_without_gpu_counters_gives_no_gpu_figures() {
+        let c = spawn(gpu_fake(None), Box::new(|| {})).unwrap();
+        let _ = c.frames.recv_timeout(Duration::from_secs(5)).unwrap();
+        let f = want_gpu(&c, true);
+        assert!(f.gpu.is_none());
+        assert_eq!(f.snapshot.procs.len(), 1, "the scan still works");
     }
 
     #[test]

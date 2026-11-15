@@ -22,6 +22,8 @@ pub enum SortKey {
     Handles,
     DiskRead,
     DiskWrite,
+    Gpu,
+    GpuMem,
     User,
     Started,
 }
@@ -51,6 +53,10 @@ pub enum Scope {
     Projects,
     /// Orphaned dev servers (spec Phase 4): listening, in a repository, parent gone.
     Leftovers,
+    /// The treemap (spec Phase 5) instead of the table; every process.
+    Blast,
+    /// Processes doing disk I/O, busiest first, with bars (spec Phase 5).
+    Disk,
 }
 
 /// View options the user controls.
@@ -63,6 +69,8 @@ pub struct ViewOpts {
     pub tree: bool,
     /// CPU % relative to one core (htop-style) instead of the whole machine.
     pub per_core: bool,
+    /// Show the GPU columns (the collector samples GPU counters only while they are shown).
+    pub gpu: bool,
     pub sort: Sort,
     /// Tree nodes the user collapsed (everything is expanded by default).
     pub collapsed: HashSet<ProcKey>,
@@ -115,6 +123,14 @@ fn repo_of<'a>(frame: &'a Frame, p: &Proc) -> Option<&'a Arc<str>> {
     frame.context.get(&p.raw.key).and_then(|c| c.repo.as_ref())
 }
 
+/// GPU figures of a process this frame; `None` when GPU counters were not sampled.
+pub fn gpu_of(frame: &Frame, p: &Proc) -> Option<atropos_core::gpu::GpuUsage> {
+    frame
+        .gpu
+        .as_ref()
+        .map(|g| g.get(&p.raw.key).copied().unwrap_or_default())
+}
+
 fn user_of(frame: &Frame, p: &Proc) -> String {
     frame
         .statics
@@ -141,6 +157,11 @@ fn compare(frame: &Frame, sort: Sort, tree: bool, a: &Proc, b: &Proc) -> Orderin
         SortKey::Handles => a.raw.handles.cmp(&b.raw.handles),
         SortKey::DiskRead => f32_key(a.read_rate).total_cmp(&f32_key(b.read_rate)),
         SortKey::DiskWrite => f32_key(a.write_rate).total_cmp(&f32_key(b.write_rate)),
+        SortKey::Gpu => f32_key(gpu_of(frame, a).map(|g| g.util_pct))
+            .total_cmp(&f32_key(gpu_of(frame, b).map(|g| g.util_pct))),
+        SortKey::GpuMem => gpu_of(frame, a)
+            .map(|g| g.dedicated)
+            .cmp(&gpu_of(frame, b).map(|g| g.dedicated)),
         SortKey::User => user_of(frame, a).cmp(&user_of(frame, b)),
         SortKey::Started => a.raw.key.create_time.cmp(&b.raw.key.create_time),
     };
@@ -170,7 +191,7 @@ fn port_map(frame: &Frame) -> Option<std::collections::HashMap<u32, Vec<u16>>> {
 fn in_scope(frame: &Frame, opts: &ViewOpts) -> Option<Vec<bool>> {
     let snap = &frame.snapshot;
     match opts.scope {
-        Scope::All => None,
+        Scope::All | Scope::Blast => None,
         Scope::Projects => Some(
             snap.procs
                 .iter()
@@ -180,6 +201,7 @@ fn in_scope(frame: &Frame, opts: &ViewOpts) -> Option<Vec<bool>> {
                 })
                 .collect(),
         ),
+        Scope::Disk => Some(snap.procs.iter().map(crate::disk::active).collect()),
         Scope::Leftovers => {
             let keys: HashSet<ProcKey> = frame
                 .sockets
@@ -520,5 +542,53 @@ mod tests {
     #[test]
     fn fuzzy_text_searches_cmdline() {
         assert_eq!(pids(&run("code flag", &ViewOpts::default())), [3]);
+    }
+
+    #[test]
+    fn sorting_by_gpu_puts_the_busiest_first() {
+        use atropos_core::gpu::GpuUsage;
+        let mut f = frame();
+        f.gpu = Some(std::sync::Arc::new(
+            [
+                (
+                    k(3),
+                    GpuUsage {
+                        util_pct: 70.0,
+                        dedicated: 1,
+                    },
+                ),
+                (
+                    k(9),
+                    GpuUsage {
+                        util_pct: 5.0,
+                        dedicated: 900,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        let order = |key| {
+            let opts = ViewOpts {
+                sort: Sort {
+                    key,
+                    descending: true,
+                },
+                ..ViewOpts::default()
+            };
+            rows(
+                &f,
+                &Filter::default(),
+                "",
+                &opts,
+                &mut FilterMatcher::default(),
+            )
+            .iter()
+            .map(|r| r.key.pid)
+            .take(2)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(order(SortKey::Gpu), vec![3, 9]);
+        assert_eq!(order(SortKey::GpuMem), vec![9, 3]);
     }
 }

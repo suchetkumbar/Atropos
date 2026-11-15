@@ -39,6 +39,8 @@ pub struct FakePlatform {
     /// Returned by `sockets()` / `services()`.
     pub sockets: Vec<Socket>,
     pub services: Vec<ServiceInfo>,
+    /// Returned by `gpu()`; `None` = a machine without GPU counters.
+    pub gpu: Option<Vec<crate::gpu::GpuSample>>,
     denied: HashSet<ProcKey>,
     exited: HashSet<ProcKey>,
     reactions: HashMap<ProcKey, Reaction>,
@@ -286,6 +288,10 @@ impl Platform for FakePlatform {
 
     fn sockets(&mut self) -> Result<Vec<Socket>> {
         Ok(self.sockets.clone())
+    }
+
+    fn gpu(&mut self) -> Result<Vec<crate::gpu::GpuSample>> {
+        self.gpu.clone().ok_or(CoreError::Unsupported)
     }
 
     fn services(&mut self) -> Result<Vec<ServiceInfo>> {

@@ -4,6 +4,7 @@ mod alloc;
 mod ctrl_c;
 mod dialog;
 pub mod fixture_support;
+mod gpu;
 mod graceful;
 mod handle;
 mod job;

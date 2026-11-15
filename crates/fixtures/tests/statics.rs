@@ -34,7 +34,15 @@ fn exited_process_is_gone() {
     let child = atropos_fixtures::spawn("sleeper", &["--secs", "60"]).unwrap();
     let key = child.key;
     drop(child); // kills and reaps
-    let s = WindowsPlatform::new().statics(key);
+    // A parallel test that opens every process may still hold a handle to the dead sleeper,
+    // which keeps it openable for a moment (docs/notes/windows-apis.md, Pin): wait for Gone.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut p = WindowsPlatform::new();
+    let mut s = p.statics(key);
+    while s.exe_path != Field::Gone && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        s = p.statics(key);
+    }
     assert_eq!(s.exe_path, Field::Gone);
     assert_eq!(s.user, Field::Gone);
 }

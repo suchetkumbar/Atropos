@@ -41,6 +41,12 @@ pub struct FakePlatform {
     pub services: Vec<ServiceInfo>,
     /// Returned by `gpu()`; `None` = a machine without GPU counters.
     pub gpu: Option<Vec<crate::gpu::GpuSample>>,
+    /// Returned by `file_lockers()` for exactly these paths; any other path is `NotFound`.
+    pub lockers: Vec<(std::path::PathBuf, Vec<ProcKey>)>,
+    /// Every `launch()` call, in order; the n-th gets PID 1000 + n.
+    pub launched: Vec<crate::history::Launch>,
+    /// Settings changed by `tune()`; others read as Normal / every CPU / eco off.
+    pub tunings: HashMap<ProcKey, crate::tune::Tuning>,
     denied: HashSet<ProcKey>,
     exited: HashSet<ProcKey>,
     reactions: HashMap<ProcKey, Reaction>,
@@ -292,6 +298,54 @@ impl Platform for FakePlatform {
 
     fn gpu(&mut self) -> Result<Vec<crate::gpu::GpuSample>> {
         self.gpu.clone().ok_or(CoreError::Unsupported)
+    }
+
+    fn file_lockers(&mut self, path: &std::path::Path) -> Result<Vec<ProcKey>> {
+        self.lockers
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, k)| k.clone())
+            .ok_or(CoreError::NotFound)
+    }
+
+    fn tune(&mut self, p: &Pinned, t: crate::tune::Tune) -> Result<()> {
+        use crate::tune::{Priority, Tune};
+        let mut cur = self.tuning(p)?;
+        match t {
+            Tune::Priority(Priority::Realtime) => return Err(CoreError::Unsupported),
+            Tune::Priority(pr) => cur.priority = pr,
+            Tune::Affinity(m) => cur.affinity = m,
+            Tune::Eco(on) => cur.eco = Some(on),
+        }
+        self.tunings.insert(p.key(), cur);
+        Ok(())
+    }
+
+    fn tuning(&mut self, p: &Pinned) -> Result<crate::tune::Tuning> {
+        let all = if self.stats.logical_cpus >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.stats.logical_cpus) - 1
+        };
+        Ok(self
+            .tunings
+            .get(&p.key())
+            .copied()
+            .unwrap_or(crate::tune::Tuning {
+                priority: crate::tune::Priority::Normal,
+                affinity: all,
+                system_affinity: all,
+                eco: Some(false),
+            }))
+    }
+
+    fn launch(&mut self, l: &crate::history::Launch) -> Result<ProcKey> {
+        let pid = 1000 + u32::try_from(self.launched.len()).unwrap_or(0);
+        self.launched.push(l.clone());
+        Ok(ProcKey {
+            pid,
+            create_time: u64::from(pid),
+        })
     }
 
     fn services(&mut self) -> Result<Vec<ServiceInfo>> {

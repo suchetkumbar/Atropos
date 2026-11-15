@@ -50,6 +50,11 @@ Every command takes `--json` (`"schema": 1`). Exit codes are stable for scripts:
 - **Blast Radius:** the whole process tree as a treemap. Each block is sized by the memory of a process and everything it started, and coloured by CPU. Blocks hold still until something grows by more than 10 %. Click to select, double-click to zoom into a subtree, and `Del` / `Shift+Del` / `Ctrl+P` work right in the map. A toggle switches to GPU memory and GPU use.
 - **GPU columns:** GPU % (busiest engine, like Task Manager) and dedicated GPU memory per process, read only while shown. Machines without GPU counters (VMs, remote sessions, basic display adapters) show "—".
 - **Disk:** processes reading or writing right now, busiest first, with read/write bars. There is no per-process network view: Windows reports per-connection traffic only to administrators ([ADR 0008](docs/adr/0008-no-per-process-network.md)).
+- **Command palette from anywhere:** `Ctrl+Alt+K` (changeable in Settings) or the tray icon. Type `3000` and press Enter to end whatever holds port 3000, or any search (`node`, `pid:12`); kills go through the usual confirmation.
+- **What is locking this file?** `lock <path>` in the palette, `atr lock <path>`, or an opt-in Explorer right-click entry (per user, removed from Settings).
+- **History and Restart:** what Atropos ended and when; **Restart** starts it again with the same program, arguments, folder and environment.
+- **Priority, affinity and efficiency mode** from the right-click menu.
+- **Export:** `atr export` or "Export…" writes every process as JSON for a bug report; passwords and tokens on command lines are masked unless you ask otherwise.
 - Details: executable, command line, parent chain, environment (secrets such as tokens and keys are hidden until you click *Show*), and open ports with Docker/WSL forward badges.
 - Rows hold still under your mouse; the selection follows the process, not the row.
 - `Del` end · `Shift+Del` end tree · `Ctrl+P` suspend/resume · `/` search · `T` tree · `F5` refresh · `?` all shortcuts.

@@ -28,6 +28,40 @@ pub enum Event {
     Toggle(ProcKey),
     /// Context-menu action.
     Act(ProcKey, Act),
+    /// Priority or efficiency mode from the context menu.
+    Tune(ProcKey, atropos_core::tune::Tune),
+    /// "Set affinity…": open the affinity window for this process.
+    Affinity(ProcKey),
+}
+
+/// Priority submenu, efficiency mode and affinity (spec Phase 6).
+fn tune_items(ui: &mut egui::Ui, key: ProcKey, events: &mut Vec<Event>) {
+    use atropos_core::tune::{Priority, Tune};
+    ui.menu_button("Priority", |ui| {
+        for p in Priority::SETTABLE {
+            if ui.button(p.text()).clicked() {
+                events.push(Event::Tune(key, Tune::Priority(p)));
+                ui.close();
+            }
+        }
+    });
+    for (text, on, tip) in [
+        (
+            "Efficiency mode on",
+            true,
+            "Windows runs it slower and on efficient cores to save power (EcoQoS)",
+        ),
+        ("Efficiency mode off", false, "Let Windows decide again"),
+    ] {
+        if ui.button(text).on_hover_text(tip).clicked() {
+            events.push(Event::Tune(key, Tune::Eco(on)));
+            ui.close();
+        }
+    }
+    if ui.button("Set affinity…").clicked() {
+        events.push(Event::Affinity(key));
+        ui.close();
+    }
 }
 
 /// Pause marker for suspended processes.
@@ -220,6 +254,8 @@ pub fn show(
                         ui.close();
                     }
                 }
+                ui.separator();
+                tune_items(ui, row.key, &mut events);
             });
         });
     });
@@ -346,6 +382,7 @@ mod tests {
         rows: Vec<Row>,
         actions: Actions,
         acts: Vec<(ProcKey, Act)>,
+        tunes: Vec<(ProcKey, Option<atropos_core::tune::Tune>)>,
     }
 
     impl State {
@@ -357,6 +394,7 @@ mod tests {
                 rows: Vec::new(),
                 actions: Actions::new(None),
                 acts: Vec::new(),
+                tunes: Vec::new(),
             };
             s.recompute();
             s
@@ -402,6 +440,8 @@ mod tests {
                                 s.recompute();
                             }
                             Event::Act(key, act) => s.acts.push((key, act)),
+                            Event::Tune(key, t) => s.tunes.push((key, Some(t))),
+                            Event::Affinity(key) => s.tunes.push((key, None)),
                         }
                     }
                 },
@@ -457,6 +497,35 @@ mod tests {
         h.run();
         assert_eq!(h.state().acts, vec![(k(3), Act::KillTree)]);
         assert_eq!(h.state().selected, Some(k(3)));
+    }
+
+    #[test]
+    fn context_menu_changes_priority_and_efficiency_mode() {
+        use atropos_core::tune::{Priority, Tune};
+        let mut h = harness();
+        h.run();
+        h.get_by_label("Code.exe").click_secondary();
+        h.run();
+        h.get_by_label_contains("Priority").click();
+        h.run();
+        h.get_by_label("Below normal").click();
+        h.run();
+        h.get_by_label("Code.exe").click_secondary();
+        h.run();
+        h.get_by_label("Efficiency mode on").click();
+        h.run();
+        h.get_by_label("Code.exe").click_secondary();
+        h.run();
+        h.get_by_label("Set affinity…").click();
+        h.run();
+        assert_eq!(
+            h.state().tunes,
+            vec![
+                (k(3), Some(Tune::Priority(Priority::BelowNormal))),
+                (k(3), Some(Tune::Eco(true))),
+                (k(3), None),
+            ]
+        );
     }
 
     #[test]

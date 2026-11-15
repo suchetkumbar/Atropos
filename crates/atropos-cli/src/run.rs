@@ -1,7 +1,7 @@
 //! The `atr` commands, written against `Platform` so they run on the fake backend in tests.
 //! Exit codes (spec): `port` 0 found/done · 1 none · 2 denied · 3 stuck; `find` 0/1;
 //! `kill` 0 · 2 denied/protected · 3 stuck (1 = nothing matched or cancelled); `tree` 0;
-//! `wait-port` 0 free · 4 timeout. `--json` output always carries `"schema": 1`.
+//! `wait-port` 0 free · 4 timeout; `export` 0 · 2 unwritable file; `lock` 0 found · 1 none · 2 missing path / lookup failed. `--json` output always carries `"schema": 1`.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -484,6 +484,129 @@ pub fn port(env: &mut Env<'_>, port: u16, kill_args: Option<KillArgs>) -> u8 {
         );
     }
     code
+}
+
+#[derive(Serialize)]
+struct LockerOut {
+    pid: u32,
+    create_time: u64,
+    name: String,
+}
+
+#[derive(Serialize)]
+struct LockOut<'a> {
+    schema: u8,
+    path: &'a str,
+    lockers: Vec<LockerOut>,
+    error: Option<String>,
+}
+
+/// `atr lock <path>`: what has a file (or files inside a folder) open. Read-only.
+/// Exit 0 found, 1 nothing has it open, 2 the path is missing or the lookup failed.
+pub fn lock(env: &mut Env<'_>, path: &std::path::Path) -> u8 {
+    let shown = path.display().to_string();
+    let result = env.platform.file_lockers(path);
+    let snap = scan(env.platform);
+    let (lockers, error) = match result {
+        Ok(keys) => (
+            keys.iter()
+                .map(|k| LockerOut {
+                    pid: k.pid,
+                    create_time: k.create_time,
+                    name: name_of(&snap, *k),
+                })
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(e) => (Vec::new(), Some(e.to_string())),
+    };
+    let code = match (&error, lockers.is_empty()) {
+        (Some(_), _) => 2,
+        (None, true) => 1,
+        (None, false) => 0,
+    };
+    if env.json {
+        emit_json(
+            env.out,
+            &LockOut {
+                schema: SCHEMA,
+                path: &shown,
+                lockers,
+                error,
+            },
+        );
+    } else if let Some(e) = error {
+        let _ = writeln!(env.out, "{shown}: {e}");
+    } else if lockers.is_empty() {
+        let _ = writeln!(env.out, "Nothing has {shown} open");
+    } else {
+        for l in &lockers {
+            let _ = writeln!(env.out, "{} (PID {})", l.name, l.pid);
+        }
+    }
+    code
+}
+
+/// `atr export [--out <file>] [--unmasked]`: the whole process list as JSON (spec Phase 6),
+/// to stdout or a file. One scan, so CPU % is `null`. Exit 0, or 2 if the file cannot be
+/// written.
+pub fn export(env: &mut Env<'_>, out: Option<&std::path::Path>, unmasked: bool) -> u8 {
+    use atropos_core::context::{ContextCache, SyncDirs};
+    let snap = scan(env.platform);
+    let mut statics = StaticsMap::new();
+    for p in &snap.procs {
+        statics.insert(p.raw.key, Arc::new(env.platform.statics(p.raw.key)));
+    }
+    let mut cache = ContextCache::new(atropos_core::labels::Labels::builtin());
+    cache.reads_per_tick = usize::MAX;
+    cache.time_per_tick = Duration::from_secs(30);
+    let mut dirs = SyncDirs::new(cache.markers());
+    cache.refresh(env.platform, &snap, &statics, &mut dirs, &|_| true);
+    let sockets = env.platform.sockets().ok();
+    let doc = atropos_core::export::build(
+        &snap,
+        &statics,
+        cache.map(),
+        sockets.as_deref(),
+        !unmasked,
+        now_ticks(),
+    );
+    let text = atropos_core::export::to_json(&doc);
+    let Some(path) = out else {
+        let _ = env.out.write_all(text.as_bytes());
+        return 0;
+    };
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, &text));
+    match written {
+        Ok(()) => {
+            let _ = writeln!(
+                env.out,
+                "Wrote {} processes to {}",
+                doc.processes.len(),
+                path.display()
+            );
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(env.out, "Could not write {}: {e}", path.display());
+            2
+        }
+    }
+}
+
+/// Now as FILETIME ticks (the export's `taken_at`).
+fn now_ticks() -> u64 {
+    #[cfg(windows)]
+    {
+        atropos_core::platform::windows::now_filetime()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
 }
 
 /// Processes matching `query` (filter syntax), never `atr` itself.
@@ -1016,5 +1139,102 @@ mod tests {
             wait_port(e, 3000, Duration::from_millis(300))
         });
         assert_eq!(r.code, 4);
+    }
+
+    fn locked(f: &mut FakePlatform, path: &str, keys: Vec<ProcKey>) {
+        f.lockers.push((std::path::PathBuf::from(path), keys));
+    }
+
+    #[test]
+    fn lock_lists_what_has_the_file_open() {
+        let mut f = fake();
+        locked(&mut f, r"C:\Tëmp\a b.txt", vec![k(10), k(20)]);
+        let r = run(&mut f, false, false, |e| {
+            lock(e, std::path::Path::new(r"C:\Tëmp\a b.txt"))
+        });
+        assert_eq!(r.code, 0);
+        assert_eq!(r.out, "node.exe (PID 10)\nlsass.exe (PID 20)\n",);
+    }
+
+    #[test]
+    fn lock_json_golden() {
+        let mut f = fake();
+        locked(&mut f, r"C:\x.txt", vec![k(11)]);
+        let r = run(&mut f, true, false, |e| {
+            lock(e, std::path::Path::new(r"C:\x.txt"))
+        });
+        assert_eq!(r.code, 0);
+        assert_eq!(
+            r.out,
+            r#"{"schema":1,"path":"C:\\x.txt","lockers":[{"pid":11,"create_time":11,"name":"node.exe"}],"error":null}"#
+                .to_owned()
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn lock_with_nothing_open_exits_1() {
+        let mut f = fake();
+        locked(&mut f, r"C:\free.txt", vec![]);
+        let r = run(&mut f, false, false, |e| {
+            lock(e, std::path::Path::new(r"C:\free.txt"))
+        });
+        assert_eq!(r.code, 1);
+        assert_eq!(r.out, "Nothing has C:\\free.txt open\n");
+    }
+
+    #[test]
+    fn lock_on_a_missing_path_exits_2_with_the_reason() {
+        let mut f = fake();
+        let r = run(&mut f, true, false, |e| {
+            lock(e, std::path::Path::new(r"C:\nope"))
+        });
+        assert_eq!(r.code, 2);
+        assert!(
+            r.out.contains(r#""error":"the path does not exist""#),
+            "{}",
+            r.out
+        );
+    }
+
+    #[test]
+    fn export_writes_one_json_document_with_every_process() {
+        let mut f = fake();
+        let r = run(&mut f, false, false, |e| export(e, None, false));
+        assert_eq!(r.code, 0);
+        let v: serde_json::Value = serde_json::from_str(&r.out).unwrap();
+        assert_eq!(v["schema"], 1);
+        assert_eq!(v["masked"], true);
+        let names: Vec<&str> = v["processes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"node.exe") && names.contains(&"lsass.exe"),
+            "{names:?}"
+        );
+        let listener = v["processes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pid"] == 11)
+            .unwrap();
+        assert_eq!(listener["sockets"][0]["local"], "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn export_to_a_file_says_where() {
+        let mut f = fake();
+        let dir = std::env::temp_dir().join(format!("atr export tëst {}", std::process::id()));
+        let out = dir.join("snap.json");
+        let r = run(&mut f, false, false, |e| export(e, Some(&out), true));
+        assert_eq!(r.code, 0);
+        assert!(r.out.contains("snap.json"), "{}", r.out);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(v["masked"], false);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

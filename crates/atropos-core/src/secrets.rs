@@ -52,6 +52,34 @@ pub fn mask_with(name: &str, value: &str, extra: &[String]) -> Masked {
     }
 }
 
+/// What a hidden value is replaced with in exports.
+pub const HIDDEN: &str = "•••";
+
+/// A command line with secret-looking values replaced by [`HIDDEN`]: `--token=x` and
+/// `TOKEN=x` (by name, as for environment variables), the word after a secret-named flag
+/// (`--password x`), and well-known token formats anywhere.
+#[must_use]
+pub fn mask_cmdline(cmdline: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut after_secret_flag = false;
+    for word in cmdline.split(' ') {
+        let masked = if let Some((name, value)) = word.split_once('=') {
+            let bare = name.trim_start_matches(['-', '/']);
+            (!bare.is_empty() && mask(bare, value) == Masked::Hidden)
+                .then(|| format!("{name}={HIDDEN}"))
+        } else if after_secret_flag && !word.is_empty() && !word.starts_with('-') {
+            Some(HIDDEN.to_owned())
+        } else {
+            (mask("", word) == Masked::Hidden).then(|| HIDDEN.to_owned())
+        };
+        after_secret_flag = word.starts_with('-')
+            && !word.contains('=')
+            && mask(word.trim_start_matches('-'), "") == Masked::Hidden;
+        out.push(masked.unwrap_or_else(|| word.to_owned()));
+    }
+    out.join(" ")
+}
+
 /// `eyJ…`.`…`.`…`: three non-empty base64url segments, the header starting with `{"`.
 fn looks_like_jwt(v: &str) -> bool {
     let mut parts = v.split('.');
@@ -127,5 +155,30 @@ mod tests {
         ] {
             assert_eq!(mask("SOMETHING", value), Masked::Shown, "{value}");
         }
+    }
+
+    #[test]
+    fn command_lines_hide_secret_values_only() {
+        assert_eq!(
+            mask_cmdline("node server.js --port 3000 --api-token=abc123"),
+            "node server.js --port 3000 --api-token=•••"
+        );
+        assert_eq!(
+            mask_cmdline("psql --password hunter2 -h db"),
+            "psql --password ••• -h db"
+        );
+        assert_eq!(
+            mask_cmdline("curl -H ghp_0123456789abcdef https://x"),
+            "curl -H ••• https://x"
+        );
+        assert_eq!(
+            mask_cmdline("env DB_PASSWORD=x run"),
+            "env DB_PASSWORD=••• run"
+        );
+        assert_eq!(
+            mask_cmdline(r#""C:\Program Files\nodejs\node.exe" "a b" --keep=1"#),
+            r#""C:\Program Files\nodejs\node.exe" "a b" --keep=1"#
+        );
+        assert_eq!(mask_cmdline(""), "");
     }
 }

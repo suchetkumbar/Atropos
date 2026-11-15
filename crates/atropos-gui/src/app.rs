@@ -9,7 +9,7 @@ use atropos_core::ProcKey;
 use atropos_core::collector::{self, Collector, Frame, Interest, Visibility};
 use atropos_core::filter::{Filter, FilterMatcher};
 use atropos_core::platform::windows::{
-    WindowsPlatform, current_process_key, local_time, now_filetime,
+    WindowsPlatform, current_process_key, explorer_menu, local_time, now_filetime,
 };
 use eframe::egui;
 
@@ -19,10 +19,12 @@ use crate::blast::{self, BlastEvent, BlastState};
 use crate::details::{self, DetailEvent, DetailsState};
 use crate::header;
 use crate::keys::{self, Action};
+use crate::palette::{self, Palette, PaletteEvent};
 use crate::projects_bar::{self, BarEvent};
 use crate::selection::{OrderFreeze, Selection};
 use crate::settings::{self, SettingsUi};
 use crate::startup;
+use crate::summon::{Summon, Summoner};
 use crate::table::{self, Event, Look};
 use crate::view::{self, Row, Scope, Sort, SortKey, ViewOpts};
 use atropos_core::config::{self, Config, View};
@@ -65,6 +67,21 @@ pub struct AtroposApp {
     resume_offer: Option<crate::crash::ResumeOffer>,
     /// Blast Radius zoom and layout.
     blast: BlastState,
+    /// The command palette (hotkey / tray).
+    palette: Palette,
+    /// The global hotkey and the tray icon (`None` in a `--lock` window from Explorer, which
+    /// is a one-off lookup, not a second resident Atropos).
+    summoner: Option<Summoner>,
+    /// The hotkey text `summoner` was last bound with.
+    bound_hotkey: String,
+    /// The "Export snapshot" window.
+    export: crate::export_ui::ExportUi,
+    /// The "Set affinity" window, when open.
+    affinity: Option<crate::affinity::AffinityUi>,
+    /// The History window (kill history + Restart).
+    history: crate::history_view::HistoryUi,
+    /// The running file-lock lookup, if any.
+    lock_rx: Option<crossbeam_channel::Receiver<palette::LockAnswer>>,
 }
 
 impl AtroposApp {
@@ -100,6 +117,13 @@ impl AtroposApp {
             tracing::warn!("{n}");
             actions.notice(n, Instant::now());
         }
+        let summoner = args.lock.is_none().then(|| {
+            let (s, notice) = Summoner::start(&cc.egui_ctx, &config.hotkey);
+            if let Some(n) = notice {
+                actions.notice(n, Instant::now());
+            }
+            s
+        });
         cc.egui_ctx.set_theme(settings::theme(config.theme));
         actions.grace = std::time::Duration::from_secs(u64::from(config.grace_secs));
         actions.confirm = config.confirm;
@@ -146,11 +170,19 @@ impl AtroposApp {
             pointer_on_table: false,
             perf_log,
             actions,
-            config,
             settings: SettingsUi::default(),
             resume_offer,
             blast: BlastState::default(),
+            palette: Palette::default(),
+            summoner,
+            bound_hotkey: config.hotkey.clone(),
+            config,
+            lock_rx: None,
+            history: crate::history_view::HistoryUi::default(),
+            affinity: None,
+            export: crate::export_ui::ExportUi::default(),
         }
+        .with_lock_request(&cc.egui_ctx)
     }
 
     /// Takes the newest frame, if the collector sent one.
@@ -204,7 +236,8 @@ impl AtroposApp {
                 .tick_secs
                 .map(|s| std::time::Duration::from_secs_f32(s.clamp(0.5, 10.0))),
             want_ports: self.filter.has_port_term()
-                || (self.details.open && self.details.tab == details::Tab::Ports),
+                || (self.details.open && self.details.tab == details::Tab::Ports)
+                || self.palette.wants_ports(),
             want_projects: self.opts.scope == Scope::Projects,
             want_leftovers: self.opts.scope == Scope::Leftovers,
             want_gpu: if self.opts.scope == Scope::Blast {
@@ -275,12 +308,126 @@ impl AtroposApp {
                 self.changed_view();
             }
             Event::Act(key, act) => self.act(key, act),
+            Event::Tune(key, t) => {
+                let _ = self.tune(key, t);
+            }
+            Event::Affinity(key) => self.open_affinity(key),
         }
     }
 
     fn act(&mut self, key: ProcKey, act: Act) {
         if let Some(f) = &self.frame {
             self.actions.start(key, act, f);
+        }
+    }
+
+    /// Priority / affinity / efficiency mode through a pin, after the policy check.
+    fn tune(&mut self, key: ProcKey, t: atropos_core::tune::Tune) -> Result<(), String> {
+        let Some(f) = self.frame.clone() else {
+            return Err("No process list yet.".into());
+        };
+        let ctx = atropos_core::engine::policy::Context {
+            snapshot: &f.snapshot,
+            statics: &f.statics,
+            services: &[],
+            me: self.self_key.unwrap_or(ProcKey {
+                pid: 0,
+                create_time: 0,
+            }),
+        };
+        let name = f
+            .snapshot
+            .get(key)
+            .map_or_else(|| "process".to_owned(), |p| p.raw.image.to_string());
+        let now = Instant::now();
+        let r = atropos_core::tune::apply(&mut WindowsPlatform::new(), &ctx, key, t);
+        match &r {
+            Ok(()) => {
+                let what = match t {
+                    atropos_core::tune::Tune::Priority(p) => format!("priority {}", p.text()),
+                    atropos_core::tune::Tune::Affinity(m) => {
+                        format!("CPUs {}", atropos_core::tune::format_affinity(m))
+                    }
+                    atropos_core::tune::Tune::Eco(true) => "efficiency mode on".to_owned(),
+                    atropos_core::tune::Tune::Eco(false) => "efficiency mode off".to_owned(),
+                };
+                self.actions
+                    .info(format!("{name} ({}): {what}", key.pid), now);
+            }
+            Err(e) => self
+                .actions
+                .notice(format!("{name} ({}): {e}", key.pid), now),
+        }
+        r
+    }
+
+    /// Writes the current frame as JSON into the export folder.
+    fn export_snapshot(
+        &self,
+        unmasked: bool,
+        today: Option<atropos_core::platform::windows::LocalTime>,
+    ) -> Result<std::path::PathBuf, String> {
+        let f = self.frame.as_ref().ok_or("No process list yet.")?;
+        // The frame carries sockets only while a port view is open: read them now otherwise.
+        let sockets = match &f.sockets {
+            Some(s) => Some(s.to_vec()),
+            None => atropos_core::platform::Platform::sockets(&mut WindowsPlatform::new()).ok(),
+        };
+        let doc = atropos_core::export::build(
+            &f.snapshot,
+            &f.statics,
+            &f.context,
+            sockets.as_deref(),
+            !unmasked,
+            now_filetime(),
+        );
+        let dir = crate::export_ui::folder(|k| std::env::var_os(k), std::path::Path::is_dir);
+        let path = dir.join(crate::export_ui::file_name(today));
+        std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&path, atropos_core::export::to_json(&doc)))
+            .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        Ok(path)
+    }
+
+    fn open_affinity(&mut self, key: ProcKey) {
+        let Some(f) = &self.frame else {
+            return;
+        };
+        let name = f
+            .snapshot
+            .get(key)
+            .map_or_else(|| "process".to_owned(), |p| p.raw.image.to_string());
+        let mut p = WindowsPlatform::new();
+        let current =
+            atropos_core::platform::Platform::pin(&mut p, key, atropos_core::pin::Access::QUERY)
+                .ok()
+                .and_then(|pin| atropos_core::platform::Platform::tuning(&mut p, &pin).ok())
+                .map(|t| t.affinity);
+        self.affinity = Some(crate::affinity::AffinityUi::new(
+            key,
+            name,
+            f.snapshot.stats.logical_cpus,
+            current,
+        ));
+    }
+
+    fn on_affinity(&mut self, ctx: &egui::Context) {
+        let Some(st) = &mut self.affinity else {
+            return;
+        };
+        match crate::affinity::show(ctx, st) {
+            Some(crate::affinity::AffinityEvent::Apply(key, mask)) => {
+                match self.tune(key, atropos_core::tune::Tune::Affinity(mask)) {
+                    Ok(()) => self.affinity = None,
+                    Err(e) => {
+                        if let Some(st) = &mut self.affinity {
+                            st.fail(e);
+                        }
+                    }
+                }
+            }
+            Some(crate::affinity::AffinityEvent::Close) => self.affinity = None,
+            None => {}
         }
     }
 
@@ -308,41 +455,7 @@ impl AtroposApp {
                 self.filter = Filter::parse(&self.search);
                 self.changed_view();
             }
-            for (scope, text, tip) in [
-                (Scope::All, "All", "Every process"),
-                (
-                    Scope::Projects,
-                    "Projects",
-                    "Processes running inside a git repository, grouped by repository",
-                ),
-                (
-                    Scope::Leftovers,
-                    "Leftovers",
-                    "Dev servers left behind: listening on a port, inside a repository, \
-                     and whatever started them is gone",
-                ),
-                (
-                    Scope::Blast,
-                    "Blast Radius",
-                    "The process tree as a map: each block is sized by the memory of the \
-                     process and everything it started, and coloured by CPU",
-                ),
-                (
-                    Scope::Disk,
-                    "Disk",
-                    "Processes reading or writing the disk right now, busiest first",
-                ),
-            ] {
-                if ui
-                    .selectable_label(self.opts.scope == scope, text)
-                    .on_hover_text(tip)
-                    .clicked()
-                    && self.opts.scope != scope
-                {
-                    self.opts.scope = scope;
-                    self.changed_view();
-                }
-            }
+            self.scope_buttons(ui);
             ui.separator();
             if ui
                 .add_enabled(
@@ -383,6 +496,37 @@ impl AtroposApp {
                 }
                 if ui.small_button("⚙").on_hover_text("Settings").clicked() {
                     self.settings.open = !self.settings.open;
+                    if self.settings.open {
+                        self.settings.explorer_menu = Some(explorer_menu::is_installed());
+                    }
+                }
+                if ui
+                    .small_button("Export…")
+                    .on_hover_text("Save every process as JSON, for a bug report")
+                    .clicked()
+                {
+                    self.export.open = !self.export.open;
+                    self.export.result = None;
+                }
+                if ui
+                    .small_button("History")
+                    .on_hover_text("What Atropos ended, with Restart")
+                    .clicked()
+                {
+                    self.history.open = !self.history.open;
+                    if self.history.open {
+                        self.history.entries =
+                            atropos_core::history::read(&atropos_core::history::path());
+                    }
+                }
+                if ui
+                    .small_button("What is locking…")
+                    .on_hover_text(
+                        "Find what has a file or folder open (also: lock <path> in the palette)",
+                    )
+                    .clicked()
+                {
+                    self.palette.summon_with("lock ");
                 }
                 if let Some(f) = &self.frame {
                     ui.label(format!(
@@ -393,6 +537,45 @@ impl AtroposApp {
                 }
             });
         });
+    }
+
+    /// One button per scope (All, Projects, Leftovers, Blast Radius, Disk).
+    fn scope_buttons(&mut self, ui: &mut egui::Ui) {
+        for (scope, text, tip) in [
+            (Scope::All, "All", "Every process"),
+            (
+                Scope::Projects,
+                "Projects",
+                "Processes running inside a git repository, grouped by repository",
+            ),
+            (
+                Scope::Leftovers,
+                "Leftovers",
+                "Dev servers left behind: listening on a port, inside a repository, \
+             and whatever started them is gone",
+            ),
+            (
+                Scope::Blast,
+                "Blast Radius",
+                "The process tree as a map: each block is sized by the memory of the \
+             process and everything it started, and coloured by CPU",
+            ),
+            (
+                Scope::Disk,
+                "Disk",
+                "Processes reading or writing the disk right now, busiest first",
+            ),
+        ] {
+            if ui
+                .selectable_label(self.opts.scope == scope, text)
+                .on_hover_text(tip)
+                .clicked()
+                && self.opts.scope != scope
+            {
+                self.opts.scope = scope;
+                self.changed_view();
+            }
+        }
     }
 
     /// Header, search bar and (in the Projects scope) the repository strip.
@@ -425,6 +608,9 @@ impl AtroposApp {
         ctx: &egui::Context,
         today: Option<atropos_core::platform::windows::LocalTime>,
     ) -> bool {
+        if self.palette.open {
+            return false; // the palette takes every key while it is open
+        }
         let typing = ctx.wants_keyboard_input();
         let mut refresh = false;
         for a in ctx.input(|i| keys::actions(&i.events, typing)) {
@@ -529,8 +715,148 @@ impl AtroposApp {
         }
     }
 
+    /// Hotkey and tray requests: bring the window back (and open the palette), or quit.
+    fn on_summons(&mut self, ctx: &egui::Context) {
+        let Some(summoner) = &self.summoner else {
+            return;
+        };
+        for s in summoner.poll() {
+            if s == Summon::Quit {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                continue;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if s == Summon::Palette {
+                self.palette.summon();
+            }
+        }
+    }
+
+    fn on_palette(&mut self, ctx: &egui::Context) {
+        let Some(f) = self.frame.clone() else {
+            return;
+        };
+        let me = self.me.clone().unwrap_or_default();
+        match palette::show(ctx, &mut self.palette, &f, &me, &mut self.matcher) {
+            Some(PaletteEvent::Kill(k)) => self.act(k, Act::Kill),
+            Some(PaletteEvent::Show(k)) => {
+                self.selection.0 = Some(k);
+                self.details.open = true;
+            }
+            Some(PaletteEvent::Lookup(path)) => self.lookup_lock(ctx, path),
+            None => {}
+        }
+    }
+
+    /// `--lock <path>` (the Explorer menu): open the palette on that path and look it up.
+    fn with_lock_request(mut self, ctx: &egui::Context) -> Self {
+        if let Some(path) = self.args.lock.clone() {
+            self.palette
+                .summon_with(&format!("lock \"{}\"", path.display()));
+            self.lookup_lock(ctx, path);
+        }
+        self
+    }
+
+    /// Starts "what has `path` open?" on its own thread (it may take up to
+    /// `locks::TIMEOUT`); the answer lands in the palette.
+    fn lookup_lock(&mut self, ctx: &egui::Context, path: std::path::PathBuf) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let ctx = ctx.clone();
+        self.palette.looking = Some(path.clone());
+        let spawned = std::thread::Builder::new()
+            .name("atropos-lock".into())
+            .spawn(move || {
+                let r = atropos_core::platform::Platform::file_lockers(
+                    &mut WindowsPlatform::new(),
+                    &path,
+                )
+                .map_err(|e| lock_message(&e));
+                let _ = tx.send((path, r));
+                ctx.request_repaint();
+            });
+        match spawned {
+            Ok(_) => self.lock_rx = Some(rx),
+            Err(e) => {
+                let path = self.palette.looking.take().unwrap_or_default();
+                self.palette.lock = Some((path, Err(format!("Could not start the lookup: {e}"))));
+            }
+        }
+    }
+
+    fn poll_lock(&mut self) {
+        let Some(rx) = &self.lock_rx else {
+            return;
+        };
+        if let Ok(answer) = rx.try_recv() {
+            self.palette.looking = None;
+            self.palette.lock = Some(answer);
+            self.lock_rx = None;
+        }
+    }
+
+    /// The History window: reload after a new entry, and Restart what the user picked.
+    fn on_history(
+        &mut self,
+        ctx: &egui::Context,
+        today: Option<atropos_core::platform::windows::LocalTime>,
+        now: Instant,
+    ) {
+        if self.actions.take_history_changed() && self.history.open {
+            self.history.entries = atropos_core::history::read(&atropos_core::history::path());
+        }
+        if !self.history.open {
+            return;
+        }
+        let Some(launch) = crate::history_view::show(ctx, &mut self.history, today) else {
+            return;
+        };
+        let elevated = atropos_core::platform::windows::current_process_elevated();
+        match atropos_core::history::restart(&mut WindowsPlatform::new(), &launch, elevated) {
+            Ok(k) => self
+                .actions
+                .info(format!("Started again as PID {}", k.pid), now),
+            Err(e) => self.actions.notice(e, now),
+        }
+    }
+
+    /// Installs or removes the Explorer entry the user just (un)ticked; a failed install leaves
+    /// nothing half written.
+    fn set_explorer_menu(&mut self, install: bool, now: Instant) {
+        let result = if install {
+            std::env::current_exe()
+                .map_err(|e| e.to_string())
+                .and_then(|exe| {
+                    explorer_menu::install(&exe).map_err(|e| {
+                        let _ = explorer_menu::remove();
+                        e.to_string()
+                    })
+                })
+        } else {
+            explorer_menu::remove().map_err(|e| e.to_string())
+        };
+        if let Err(e) = result {
+            tracing::warn!("explorer menu: {e}");
+            self.actions
+                .notice(format!("Could not change the Explorer menu: {e}"), now);
+        }
+        self.settings.explorer_menu = Some(explorer_menu::is_installed());
+    }
+
     /// Applies and saves changed settings (the file is created only now, Z3).
     fn apply_settings(&mut self, ctx: &egui::Context, now: Instant) {
+        if self.config.hotkey != self.bound_hotkey {
+            self.bound_hotkey.clone_from(&self.config.hotkey);
+            if let Some(n) = self
+                .summoner
+                .as_mut()
+                .and_then(|s| s.rebind(&self.config.hotkey))
+            {
+                self.actions.notice(n, now);
+            }
+        }
         ctx.set_theme(settings::theme(self.config.theme));
         self.actions.grace = std::time::Duration::from_secs(u64::from(self.config.grace_secs));
         self.actions.confirm = self.config.confirm;
@@ -577,6 +903,8 @@ impl eframe::App for AtroposApp {
         let now = Instant::now();
         self.actions.poll(now);
         let today = local_time(now_filetime());
+        self.on_summons(ctx);
+        self.poll_lock();
         let refresh = self.on_keys(ctx, today);
         self.steer(ctx, refresh);
 
@@ -618,6 +946,7 @@ impl eframe::App for AtroposApp {
                 });
             });
         egui::CentralPanel::default().show(ctx, |ui| self.central(ui, today));
+        self.on_palette(ctx);
         if let Some(f) = self.frame.clone() {
             self.actions.show(ctx, &f, today, now);
         }
@@ -632,6 +961,14 @@ impl eframe::App for AtroposApp {
         }
         if self.settings.open && settings::show(ctx, &mut self.settings, &mut self.config) {
             self.apply_settings(ctx, now);
+        }
+        if let Some(want) = self.settings.explorer_request.take() {
+            self.set_explorer_menu(want, now);
+        }
+        self.on_history(ctx, today, now);
+        self.on_affinity(ctx);
+        if let Some(unmasked) = crate::export_ui::show(ctx, &mut self.export) {
+            self.export.result = Some(self.export_snapshot(unmasked, today));
         }
         if self.dirty {
             // A view change made this frame: show it now rather than at the next tick.
@@ -657,5 +994,18 @@ impl eframe::App for AtroposApp {
     #[cfg(feature = "renderer-wgpu")]
     fn on_exit(&mut self) {
         self.log_heap();
+    }
+}
+
+/// The palette's words for a failed lookup.
+fn lock_message(e: &atropos_core::CoreError) -> String {
+    use atropos_core::CoreError;
+    match e {
+        CoreError::NotFound => "That file or folder does not exist.".into(),
+        CoreError::TimedOut => format!(
+            "No answer after {} s (an unreachable network share?).",
+            atropos_core::locks::TIMEOUT.as_secs()
+        ),
+        other => format!("Windows could not say what has it open ({other})."),
     }
 }

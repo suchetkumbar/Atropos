@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
+/// The global hotkey that opens the command palette (spec Phase 6).
+pub const DEFAULT_HOTKEY: &str = "Ctrl+Alt+K";
 
 /// When the kill confirmation dialog appears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -51,6 +53,8 @@ pub struct Config {
     pub mask_names: Vec<String>,
     pub theme: Theme,
     pub default_view: View,
+    /// Global hotkey for the command palette, e.g. `Ctrl+Alt+K`.
+    pub hotkey: String,
     /// Extra smart-label rules (`[[labels]]`), tried before the built-in ones (spec §4.8).
     /// Kept last: TOML writes arrays of tables after the plain keys.
     pub labels: Vec<crate::labels::RuleDef>,
@@ -66,6 +70,7 @@ impl Default for Config {
             mask_names: Vec::new(),
             theme: Theme::System,
             default_view: View::Flat,
+            hotkey: DEFAULT_HOTKEY.to_owned(),
             labels: Vec::new(),
         }
     }
@@ -177,6 +182,7 @@ mod tests {
             mask_names: vec!["PRIVATE".into()],
             theme: Theme::Dark,
             default_view: View::Tree,
+            hotkey: "Win+Shift+K".into(),
             ..Config::default()
         };
         save(&p, &c).unwrap();
@@ -197,6 +203,7 @@ mod tests {
         let (c, notice) = load(&p);
         assert_eq!(c.grace_secs, 12);
         assert_eq!(c.theme, Theme::System);
+        assert_eq!(c.hotkey, DEFAULT_HOTKEY);
         assert_eq!(notice, None);
         let _ = std::fs::remove_dir_all(&d);
     }

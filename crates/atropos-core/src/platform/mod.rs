@@ -117,6 +117,47 @@ pub trait Platform: Send {
     /// Releases what [`gpu`](Self::gpu) keeps open; called when GPU figures are no longer shown.
     fn gpu_stop(&mut self) {}
 
+    /// The processes that have `path` open, or files inside it when it is a folder (at most
+    /// [`crate::locks::MAX_FILES`] files are asked about). Takes at most
+    /// [`crate::locks::TIMEOUT`] (`TimedOut` after that, e.g. an unreachable share).
+    ///
+    /// # Errors
+    /// `NotFound` if `path` does not exist; `Os` if the OS lookup fails.
+    fn file_lockers(&mut self, path: &std::path::Path) -> Result<Vec<ProcKey>> {
+        let _ = path;
+        Err(crate::CoreError::Unsupported)
+    }
+
+    /// Starts a process from a launch record (Restart): `exe` with the command line verbatim,
+    /// in `cwd`, with exactly `env`. Returns the new process's key.
+    ///
+    /// # Errors
+    /// If the OS refuses to start it.
+    fn launch(&mut self, l: &crate::history::Launch) -> Result<ProcKey> {
+        let _ = l;
+        Err(crate::CoreError::Unsupported)
+    }
+
+    /// Changes priority, affinity or efficiency mode through a pin taken with
+    /// [`crate::tune::ACCESS`].
+    ///
+    /// # Errors
+    /// `Unsupported` for a realtime priority or an affinity on a machine with processor
+    /// groups; `Os` if Windows refuses.
+    fn tune(&mut self, p: &Pinned, t: crate::tune::Tune) -> Result<()> {
+        let _ = (p, t);
+        Err(crate::CoreError::Unsupported)
+    }
+
+    /// Reads priority, affinity and efficiency mode through a pin.
+    ///
+    /// # Errors
+    /// If Windows refuses.
+    fn tuning(&mut self, p: &Pinned) -> Result<crate::tune::Tuning> {
+        let _ = p;
+        Err(crate::CoreError::Unsupported)
+    }
+
     /// Running services and the PIDs hosting them.
     ///
     /// # Errors

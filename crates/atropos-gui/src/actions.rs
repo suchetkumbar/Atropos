@@ -4,12 +4,15 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use atropos_core::Field;
 use atropos_core::ProcKey;
 use atropos_core::collector::Frame;
 use atropos_core::engine::executor::{self, Event, Executor, Request};
-use atropos_core::engine::kill::KillOpts;
+use atropos_core::engine::kill::{KillOpts, Outcome};
 use atropos_core::engine::policy::{ActionKind, Verdict};
+use atropos_core::history::{self, Launch};
 use atropos_core::platform::windows::{LocalTime, WindowsPlatform};
+use atropos_core::platform::{Platform as _, ProcEnv};
 use eframe::egui;
 
 use crate::dialog::{self, Answer, Dialog, GroupDialog, Kind};
@@ -132,6 +135,14 @@ pub struct Actions {
     pub grace: std::time::Duration,
     pub confirm: atropos_core::config::Confirm,
     journal: Option<std::sync::Arc<std::sync::Mutex<atropos_core::journal::Journal>>>,
+    /// The kill history file (`None`: no history, e.g. in tests that do not ask for one).
+    pub history: Option<std::path::PathBuf>,
+    /// Reads the cwd + environment of a process for its launch record (the PEB on Windows).
+    pub read_env: fn(ProcKey) -> Field<ProcEnv>,
+    /// Launch records captured when a kill started, until its outcome arrives.
+    captured: HashMap<ProcKey, Launch>,
+    /// An entry was added since the last [`take_history_changed`](Self::take_history_changed).
+    history_changed: bool,
 }
 
 impl Actions {
@@ -152,6 +163,43 @@ impl Actions {
             grace: std::time::Duration::from_secs(5),
             confirm: atropos_core::config::Confirm::Always,
             journal: None,
+            history: None,
+            read_env: |_| Field::Unsupported,
+            captured: HashMap::new(),
+            history_changed: false,
+        }
+    }
+
+    /// Whether the history gained an entry since the last call.
+    pub fn take_history_changed(&mut self) -> bool {
+        std::mem::take(&mut self.history_changed)
+    }
+
+    /// Records a kill that worked (with the launch record captured when it started).
+    fn record(&mut self, key: ProcKey, tree: bool, outcome: Outcome) {
+        let launch = self.captured.remove(&key);
+        let Some(path) = &self.history else {
+            return;
+        };
+        let outcome = match outcome {
+            Outcome::Exited => "exited",
+            Outcome::Terminated => "terminated",
+            _ => return,
+        };
+        let entry = history::Entry {
+            v: history::VERSION,
+            at: atropos_core::platform::windows::now_filetime(),
+            pid: key.pid,
+            create_time: key.create_time,
+            name: self.name(key),
+            tree,
+            outcome: outcome.to_owned(),
+            launch,
+        };
+        // Never fails the kill: a locked or full disk only loses the history line.
+        match history::append(path, &entry, history::MAX_BYTES) {
+            Ok(()) => self.history_changed = true,
+            Err(e) => tracing::warn!("history {}: {e}", path.display()),
         }
     }
 
@@ -190,6 +238,8 @@ impl Actions {
         .ok();
         let mut a = Self::new(exec);
         a.journal = Some(journal);
+        a.history = Some(history::path());
+        a.read_env = |key| WindowsPlatform::new().cwd_and_env(key);
         a.me = Some(me);
         a.repaint = Some(ctx.clone());
         a
@@ -308,6 +358,16 @@ impl Actions {
             .get(key)
             .map_or_else(|| "process".to_owned(), |p| p.raw.image.to_string());
         self.names.insert(key, name);
+        if matches!(act, Act::Kill | Act::KillTree) {
+            // Captured now, while the process still runs: Restart needs it (spec Phase 6).
+            if let Some(launch) = frame
+                .statics
+                .get(&key)
+                .and_then(|s| history::capture(s, &(self.read_env)(key)))
+            {
+                self.captured.insert(key, launch);
+            }
+        }
         self.pending.insert(key, act);
         self.send(Request::Check {
             key,
@@ -330,12 +390,16 @@ impl Actions {
                 }
                 Event::Killed(key, o) => {
                     self.status.remove(&key);
+                    self.record(key, false, o);
                     let mut m = toast::outcome_message(&self.name(key), key.pid, o);
                     m.retry.clone_from(&retry);
                     self.toasts.push(m, now);
                 }
                 Event::TreeKilled(key, r) => {
                     self.status.remove(&key);
+                    if let Some((_, o)) = r.members.iter().find(|(k, _)| *k == key) {
+                        self.record(key, true, *o);
+                    }
                     let mut m = toast::tree_message(&self.name(key), key.pid, &r);
                     m.retry.clone_from(&retry);
                     self.toasts.push(m, now);
@@ -443,6 +507,11 @@ impl Actions {
         }
     }
 
+    /// A one-line success message (e.g. "started again").
+    pub fn info(&mut self, text: String, now: Instant) {
+        self.toast(text, toast::Level::Ok, now);
+    }
+
     /// A one-line notice (e.g. a settings problem).
     pub fn notice(&mut self, text: String, now: Instant) {
         self.toast(text, toast::Level::Warn, now);
@@ -534,6 +603,9 @@ impl Actions {
             if let Some(answer) = dialog::show(ctx, d, frame, today) {
                 let (key, kind, console) = (d.key, d.kind, d.console);
                 self.dialog = None;
+                if !matches!(answer, Answer::Confirm { .. }) {
+                    self.captured.remove(&key);
+                }
                 if let Answer::Instead(supervisor) = answer {
                     self.start(supervisor, Act::KillTree, frame);
                 }
@@ -811,5 +883,58 @@ mod tests {
         a.answer_group(Answer::Cancel);
         assert!(!a.holds());
         assert!(a.status().is_empty());
+    }
+
+    #[test]
+    fn an_ended_process_lands_in_the_history_with_its_launch_record() {
+        use atropos_core::platform::ProcEnv;
+        use atropos_core::statics::Statics;
+        use atropos_core::{Field, history};
+        use std::sync::Arc;
+        let key = ProcKey {
+            pid: 10,
+            create_time: 1,
+        };
+        let mut f = FakePlatform::new(1);
+        f.push_frame(vec![RawProc::new(key, 0, "node.exe")]);
+        let me = ProcKey {
+            pid: 3,
+            create_time: 3,
+        };
+        let exec = executor::spawn(Box::new(f), me, Box::new(|| {})).unwrap();
+        let dir = std::env::temp_dir().join(format!("atropos-gui-hist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = Actions::new(Some(exec));
+        a.confirm = atropos_core::config::Confirm::Risky;
+        a.history = Some(dir.join("history.jsonl"));
+        a.read_env = |_| {
+            Field::Ok(ProcEnv {
+                cwd: Arc::from(r"D:\code\shop\"),
+                vars: vec![("API_TOKEN".into(), "s3cr3t".into())],
+            })
+        };
+        let mut frame = frame_with(key);
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let statics = Statics {
+            exe_path: Field::Ok(Arc::from(exe.as_str())),
+            cmdline: Field::Ok(Arc::from("node.exe server.js")),
+            ..Statics::unavailable(&Field::Restricted)
+        };
+        let mut map = (*frame.statics).clone();
+        map.insert(key, Arc::new(statics));
+        frame.statics = Arc::new(map);
+
+        a.start(key, Act::Kill, &frame);
+        pump(&mut a, |a| a.toasts.len() == 1);
+        let entries = history::read(&dir.join("history.jsonl"));
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].key(), key);
+        assert!(!entries[0].tree);
+        let l = entries[0].launch.as_ref().unwrap();
+        assert_eq!(l.exe, exe);
+        assert_eq!(l.cmdline, "node.exe server.js");
+        assert_eq!(l.cwd, r"D:\code\shop\");
+        assert!(a.take_history_changed());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

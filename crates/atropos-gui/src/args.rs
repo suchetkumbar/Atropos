@@ -1,4 +1,5 @@
-//! GUI command-line flags (perf/diagnostics only; no clap in the GUI to keep it small).
+//! GUI command-line flags (perf/diagnostics, and `--lock` for the Explorer menu; no clap in the
+//! GUI to keep it small).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ pub struct Args {
     /// `--perf-log <path>`: append `tick_ms=<f32> scan_ms=<f32>` per collector tick and `frame_ms=<f64>` per UI
     /// update.
     pub perf_log: Option<PathBuf>,
+    /// `--lock <path>`: open the palette on "what has this open?" (the Explorer menu entry).
+    pub lock: Option<PathBuf>,
 }
 
 impl Args {
@@ -25,6 +28,7 @@ impl Args {
                 Some("--startup-log") => out.startup_log = it.next().map(PathBuf::from),
                 Some("--exit-after-first-frame") => out.exit_after_first_frame = true,
                 Some("--perf-log") => out.perf_log = it.next().map(PathBuf::from),
+                Some("--lock") => out.lock = it.next().map(PathBuf::from),
                 _ => {}
             }
         }
@@ -62,5 +66,11 @@ mod tests {
     fn unknown_and_dangling_flags_are_ignored() {
         let got = Args::parse(a(&["--bogus", "--startup-log"]));
         assert_eq!(got, Args::default());
+    }
+
+    #[test]
+    fn parses_lock_path_from_explorer() {
+        let got = Args::parse(a(&["--lock", r"D:\Prôjects\my app\data.db"]));
+        assert_eq!(got.lock, Some(PathBuf::from(r"D:\Prôjects\my app\data.db")));
     }
 }

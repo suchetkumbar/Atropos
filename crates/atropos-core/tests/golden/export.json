@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "atropos": "test",
+  "taken_at": 133000000000000000,
+  "masked": true,
+  "logical_cpus": 4,
+  "total_ram": 17179869184,
+  "used_ram": 8589934592,
+  "processes": [
+    {
+      "pid": 1,
+      "create_time": 100,
+      "parent_pid": null,
+      "name": "explorer.exe",
+      "label": null,
+      "exe": null,
+      "cmdline": null,
+      "user": null,
+      "cwd": null,
+      "repo": null,
+      "cpu_pct": 0.0,
+      "private_ws": 0,
+      "threads": 0,
+      "handles": 0,
+      "suspended": false,
+      "sockets": []
+    },
+    {
+      "pid": 2,
+      "create_time": 200,
+      "parent_pid": 1,
+      "name": "node.exe",
+      "label": "Next.js dev · shop",
+      "exe": "C:\\Program Files\\nodejs\\node.exe",
+      "cmdline": "node server.js --api-token=•••",
+      "user": "josé",
+      "cwd": "D:\\code\\shop\\",
+      "repo": "D:\\code\\shop",
+      "cpu_pct": 6.25,
+      "private_ws": 209715200,
+      "threads": 11,
+      "handles": 300,
+      "suspended": false,
+      "sockets": [
+        {
+          "proto": "tcp",
+          "local": "[::1]:3000",
+          "remote": null,
+          "state": "listen"
+        }
+      ]
+    },
+    {
+      "pid": 9,
+      "create_time": 900,
+      "parent_pid": null,
+      "name": "lsass.exe",
+      "label": null,
+      "exe": null,
+      "cmdline": null,
+      "user": null,
+      "cwd": null,
+      "repo": null,
+      "cpu_pct": 0.0,
+      "private_ws": 0,
+      "threads": 0,
+      "handles": 0,
+      "suspended": false,
+      "sockets": []
+    }
+  ]
+}

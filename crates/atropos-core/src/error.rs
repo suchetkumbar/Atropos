@@ -9,6 +9,12 @@ pub enum CoreError {
     /// The operation is not supported on this platform or OS version.
     #[error("operation not supported on this platform")]
     Unsupported,
+    /// The file or folder asked about does not exist.
+    #[error("the path does not exist")]
+    NotFound,
+    /// The OS did not answer in time (e.g. a file lookup on an unreachable network share).
+    #[error("no answer in time")]
+    TimedOut,
 }
 
 /// Core result alias.

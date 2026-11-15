@@ -3,11 +3,16 @@
 mod alloc;
 mod ctrl_c;
 mod dialog;
+pub mod explorer_menu;
 pub mod fixture_support;
 mod gpu;
 mod graceful;
 mod handle;
 mod job;
+mod launch;
+mod locks;
+mod tune;
+pub use launch::current_process_elevated;
 mod net;
 mod peb;
 mod pin;

@@ -10,20 +10,25 @@ use crate::{CoreError, ProcKey};
 pub struct Access {
     pub terminate: bool,
     pub suspend: bool,
+    /// Change priority, affinity, efficiency mode (`PROCESS_SET_INFORMATION`).
+    pub tune: bool,
 }
 
 impl Access {
     pub const QUERY: Access = Access {
         terminate: false,
         suspend: false,
+        tune: false,
     };
     pub const KILL: Access = Access {
         terminate: true,
         suspend: true,
+        tune: false,
     };
     pub const SUSPEND: Access = Access {
         terminate: false,
         suspend: true,
+        tune: false,
     };
 }
 

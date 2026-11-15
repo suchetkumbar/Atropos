@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-    PROCESS_SUSPEND_RESUME, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
-    WaitForMultipleObjects, WaitForSingleObject,
+    OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+    PROCESS_SET_QUOTA, PROCESS_SUSPEND_RESUME, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    TerminateProcess, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 use super::handle::OwnedHandle;
@@ -32,6 +32,9 @@ pub(crate) fn mask(access: Access) -> PROCESS_ACCESS_RIGHTS {
     }
     if access.suspend {
         m |= PROCESS_SUSPEND_RESUME;
+    }
+    if access.tune {
+        m |= PROCESS_SET_INFORMATION;
     }
     m
 }
@@ -78,7 +81,7 @@ pub(crate) fn exe_path(p: &Pinned) -> Option<String> {
     super::statics::exe_path(h).ok().map(ToString::to_string)
 }
 
-fn raw(p: &Pinned) -> Option<HANDLE> {
+pub(crate) fn raw(p: &Pinned) -> Option<HANDLE> {
     match &p.handle {
         PinHandle::Windows(h) => Some(h.raw()),
         PinHandle::Fake => None,

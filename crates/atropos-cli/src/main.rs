@@ -80,6 +80,18 @@ enum Cmd {
         #[command(flatten)]
         k: KillFlags,
     },
+    /// Write every process (tree, statics, labels, ports) as JSON, for bug reports. Secret-looking
+    /// command-line values are masked unless --unmasked.
+    Export {
+        /// Write to this file instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Keep command lines as they are (they may contain passwords or tokens).
+        #[arg(long)]
+        unmasked: bool,
+    },
+    /// What has a file, or files inside a folder, open (exit 0 found, 1 none, 2 missing/failed).
+    Lock { path: std::path::PathBuf },
     /// Show the process tree, or the subtree of one PID.
     Tree { pid: Option<u32> },
     /// Wait until nothing uses a port (exit 0 free, 4 timeout).
@@ -153,6 +165,8 @@ fn main() -> ExitCode {
         Cmd::Find { query } => run::find(&mut env, &query.join(" ")),
         Cmd::Kill { target, k } => run::kill_cmd(&mut env, &target, k.into()),
         Cmd::Tree { pid } => run::tree(&mut env, pid),
+        Cmd::Lock { path } => run::lock(&mut env, &path),
+        Cmd::Export { out, unmasked } => run::export(&mut env, out.as_deref(), unmasked),
         Cmd::WaitPort { port, timeout } => run::wait_port(&mut env, port, timeout),
     };
     ExitCode::from(code)

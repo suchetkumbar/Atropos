@@ -261,6 +261,28 @@ impl Platform for WindowsPlatform {
         self.gpu = None;
     }
 
+    fn tune(&mut self, p: &crate::pin::Pinned, t: crate::tune::Tune) -> Result<()> {
+        super::tune::tune(p, t)
+    }
+
+    fn tuning(&mut self, p: &crate::pin::Pinned) -> Result<crate::tune::Tuning> {
+        super::tune::tuning(p)
+    }
+
+    fn launch(&mut self, l: &crate::history::Launch) -> Result<crate::ProcKey> {
+        super::launch::launch(l)
+    }
+
+    fn file_lockers(&mut self, path: &std::path::Path) -> Result<Vec<crate::ProcKey>> {
+        // Restart Manager can wait on an unreachable share: the lookup runs on its own thread
+        // and the caller gets `TimedOut` instead of a hang.
+        let path = path.to_path_buf();
+        crate::locks::bounded(crate::locks::TIMEOUT, move || {
+            let files = crate::locks::targets(&path, crate::locks::MAX_FILES)?;
+            super::locks::lockers(&files)
+        })
+    }
+
     fn cwd(&mut self, key: crate::ProcKey) -> crate::Field<std::sync::Arc<str>> {
         super::peb::read(key, false).map(|env| env.cwd)
     }

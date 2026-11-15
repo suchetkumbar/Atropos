@@ -7,6 +7,7 @@ compile_error!("enable exactly one of `renderer-glow` / `renderer-wgpu`");
 compile_error!("enable one of `renderer-glow` / `renderer-wgpu`");
 
 mod actions;
+mod affinity;
 mod app;
 mod args;
 mod blast;
@@ -15,16 +16,20 @@ mod details;
 mod dialog;
 mod disk;
 mod elevate;
+mod export_ui;
 mod fatal;
 mod format;
 mod header;
+mod history_view;
 mod icon;
 mod keys;
 mod logging;
+mod palette;
 mod projects_bar;
 mod selection;
 mod settings;
 mod startup;
+mod summon;
 mod table;
 #[cfg(test)]
 mod test_frame;

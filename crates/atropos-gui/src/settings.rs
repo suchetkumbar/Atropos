@@ -9,6 +9,14 @@ pub struct SettingsUi {
     pub open: bool,
     /// The comma-separated extra secret names being edited.
     mask_text: Option<String>,
+    /// The hotkey being edited, and why the last value was refused.
+    hotkey_text: Option<String>,
+    hotkey_err: Option<String>,
+    /// Whether the Explorer menu entry is installed, as the app read it when the window opened
+    /// (`None`: not known, the box is hidden). Settings itself never touches the registry.
+    pub explorer_menu: Option<bool>,
+    /// Set when the user ticks / unticks the box; the app installs or removes the entry.
+    pub explorer_request: Option<bool>,
 }
 
 /// Draws the window; returns whether `cfg` changed.
@@ -87,6 +95,22 @@ pub fn show(ctx: &egui::Context, ui_state: &mut SettingsUi, cfg: &mut Config) ->
                             .collect();
                     }
                     ui.end_row();
+
+                    hotkey_row(ui, ui_state, cfg);
+
+                    if let Some(mut installed) = ui_state.explorer_menu {
+                        ui.label("Explorer");
+                        let r = ui
+                            .checkbox(&mut installed, "Add \"What is locking this?\" to Explorer")
+                            .on_hover_text(
+                                "A right-click entry for files and folders, for your account \
+                                 only (Windows 11: under \"Show more options\")",
+                            );
+                        if r.changed() {
+                            ui_state.explorer_request = Some(installed);
+                        }
+                        ui.end_row();
+                    }
                 });
             ui.add_space(6.0);
             ui.label(
@@ -98,8 +122,37 @@ pub fn show(ctx: &egui::Context, ui_state: &mut SettingsUi, cfg: &mut Config) ->
     ui_state.open = open;
     if !open {
         ui_state.mask_text = None;
+        ui_state.hotkey_text = None;
+        ui_state.hotkey_err = None;
     }
     *cfg != before
+}
+
+/// "Global hotkey": checked when the field loses focus; a refused value keeps the old one.
+fn hotkey_row(ui: &mut egui::Ui, ui_state: &mut SettingsUi, cfg: &mut Config) {
+    let label = ui.label("Global hotkey");
+    ui.vertical(|ui| {
+        let text = ui_state
+            .hotkey_text
+            .get_or_insert_with(|| cfg.hotkey.clone());
+        let r = ui
+            .add(egui::TextEdit::singleline(text).hint_text(atropos_core::config::DEFAULT_HOTKEY))
+            .labelled_by(label.id)
+            .on_hover_text("Opens the command palette from any program, e.g. Ctrl+Alt+K");
+        if r.lost_focus() {
+            match crate::summon::parse_hotkey(text) {
+                Ok(_) => {
+                    text.trim().clone_into(&mut cfg.hotkey);
+                    ui_state.hotkey_err = None;
+                }
+                Err(e) => ui_state.hotkey_err = Some(e),
+            }
+        }
+        if let Some(e) = &ui_state.hotkey_err {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    });
+    ui.end_row();
 }
 
 /// The egui theme for a setting.
@@ -136,7 +189,7 @@ mod tests {
                 S {
                     ui: SettingsUi {
                         open: true,
-                        mask_text: None,
+                        ..SettingsUi::default()
                     },
                     cfg: Config::default(),
                     changes: 0,
@@ -167,5 +220,60 @@ mod tests {
         h.run();
         assert_eq!(h.state().changes, 0);
         assert_eq!(h.state().cfg, Config::default());
+    }
+
+    /// Types `text` into the hotkey field and moves focus away (the value is checked then).
+    fn set_hotkey(h: &mut Harness<'static, S>, text: &str) {
+        let field = h.get_by_label("Global hotkey");
+        field.focus();
+        h.run();
+        h.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+        h.input_mut()
+            .events
+            .push(egui::Event::Text(text.to_owned()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+    }
+
+    #[test]
+    fn a_valid_hotkey_is_taken() {
+        let mut h = harness();
+        h.run();
+        set_hotkey(&mut h, "Ctrl+Shift+Space");
+        assert_eq!(h.state().cfg.hotkey, "Ctrl+Shift+Space");
+    }
+
+    #[test]
+    fn a_hotkey_without_ctrl_alt_or_win_is_refused_with_a_reason() {
+        let mut h = harness();
+        h.run();
+        set_hotkey(&mut h, "Shift+K");
+        assert_eq!(h.state().cfg.hotkey, atropos_core::config::DEFAULT_HOTKEY);
+        assert!(
+            h.query_by_label_contains("needs Ctrl, Alt or Win")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_explorer_box_is_hidden_until_the_app_says_what_is_installed() {
+        let mut h = harness();
+        h.run();
+        assert!(h.query_by_label_contains("Explorer").is_none());
+        h.state_mut().ui.explorer_menu = Some(false);
+        h.run();
+        h.get_by_label("Add \"What is locking this?\" to Explorer")
+            .click();
+        h.run();
+        // Only a request: the app does the registry work.
+        assert_eq!(h.state().ui.explorer_request, Some(true));
+        assert_eq!(h.state().ui.explorer_menu, Some(false));
     }
 }

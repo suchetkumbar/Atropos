@@ -599,14 +599,7 @@ pub fn export(env: &mut Env<'_>, out: Option<&std::path::Path>, unmasked: bool) 
 
 /// Now as FILETIME ticks (the export's `taken_at`).
 fn now_ticks() -> u64 {
-    #[cfg(windows)]
-    {
-        atropos_core::platform::windows::now_filetime()
-    }
-    #[cfg(not(windows))]
-    {
-        0
-    }
+    atropos_core::time::now_filetime()
 }
 
 /// Processes matching `query` (filter syntax), never `atr` itself.

@@ -76,13 +76,11 @@ impl Default for Config {
     }
 }
 
-/// `%APPDATA%\Atropos\config.toml` (falls back to the temp dir without `APPDATA`).
+/// `config.toml` in this OS's settings folder (`%APPDATA%\Atropos` on Windows, see
+/// [`crate::paths`]); the temp folder without the variables.
 #[must_use]
 pub fn path_from(get: impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    let base = get("APPDATA")
-        .filter(|v| !v.is_empty())
-        .map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join("Atropos").join("config.toml")
+    crate::paths::config_dir_for(crate::paths::OS, get).join("config.toml")
 }
 
 #[must_use]
@@ -150,16 +148,19 @@ mod tests {
         d
     }
 
+    #[cfg(windows)]
     #[test]
     fn path_uses_appdata() {
         let p =
             path_from(|k| (k == "APPDATA").then(|| OsString::from(r"C:\Users\Jö\AppData\Roaming")));
         assert_eq!(
             p,
-            PathBuf::from(r"C:\Users\Jö\AppData\Roaming\Atropos\config.toml")
+            PathBuf::from(r"C:\Users\Jö\AppData\Roaming")
+                .join("Atropos")
+                .join("config.toml")
         );
         let fallback = path_from(|_| None);
-        assert!(fallback.ends_with(r"Atropos\config.toml"));
+        assert!(fallback.ends_with(Path::new("Atropos").join("config.toml")));
     }
 
     #[test]

@@ -2,8 +2,8 @@
 //! app decides what they mean. Rows are virtualized by `egui_extras`.
 
 use atropos_core::collector::Frame;
-use atropos_core::platform::windows::LocalTime;
 use atropos_core::snapshot::Proc;
+use atropos_core::time::LocalTime;
 use atropos_core::{Field, ProcKey};
 use eframe::egui::{self, Align, Layout, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -276,10 +276,7 @@ fn cell_texts(frame: &Frame, row: &Row, per_core: bool, today: Option<LocalTime>
         Some(Field::Restricted) => "Restricted".to_owned(),
         _ => "—".to_owned(),
     };
-    let started = match (
-        atropos_core::platform::windows::local_time(p.raw.key.create_time),
-        today,
-    ) {
+    let started = match (atropos_core::time::local_time(p.raw.key.create_time), today) {
         (Some(t), Some(today)) if p.raw.key.create_time > 0 => format::started(t, today),
         _ => "—".to_owned(),
     };

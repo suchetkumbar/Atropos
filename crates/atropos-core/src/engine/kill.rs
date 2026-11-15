@@ -33,6 +33,8 @@ pub enum Strategy {
     Window,
     /// Ctrl+C through the console helper (`atr.exe __ctrl-c`).
     ConsoleCtrlC,
+    /// `SIGTERM` (Unix).
+    Signal,
     /// Nothing graceful applies: force right away.
     None,
 }

@@ -8,9 +8,11 @@ use std::time::Instant;
 use atropos_core::ProcKey;
 use atropos_core::collector::{self, Collector, Frame, Interest, Visibility};
 use atropos_core::filter::{Filter, FilterMatcher};
-use atropos_core::platform::windows::{
-    WindowsPlatform, current_process_key, explorer_menu, local_time, now_filetime,
-};
+use atropos_core::platform::Native as WindowsPlatform;
+use atropos_core::platform::current_process_key;
+#[cfg(windows)]
+use atropos_core::platform::windows::explorer_menu;
+use atropos_core::time::{local_time, now_filetime};
 use eframe::egui;
 
 use crate::actions::{Act, Actions};
@@ -365,7 +367,7 @@ impl AtroposApp {
     fn export_snapshot(
         &self,
         unmasked: bool,
-        today: Option<atropos_core::platform::windows::LocalTime>,
+        today: Option<atropos_core::time::LocalTime>,
     ) -> Result<std::path::PathBuf, String> {
         let f = self.frame.as_ref().ok_or("No process list yet.")?;
         // The frame carries sockets only while a port view is open: read them now otherwise.
@@ -496,6 +498,7 @@ impl AtroposApp {
                 }
                 if ui.small_button("⚙").on_hover_text("Settings").clicked() {
                     self.settings.open = !self.settings.open;
+                    #[cfg(windows)]
                     if self.settings.open {
                         self.settings.explorer_menu = Some(explorer_menu::is_installed());
                     }
@@ -606,7 +609,7 @@ impl AtroposApp {
     fn on_keys(
         &mut self,
         ctx: &egui::Context,
-        today: Option<atropos_core::platform::windows::LocalTime>,
+        today: Option<atropos_core::time::LocalTime>,
     ) -> bool {
         if self.palette.open {
             return false; // the palette takes every key while it is open
@@ -669,11 +672,7 @@ impl AtroposApp {
     }
 
     /// The table, or the treemap (Blast Radius) or the ranked list (Disk) in those scopes.
-    fn central(
-        &mut self,
-        ui: &mut egui::Ui,
-        today: Option<atropos_core::platform::windows::LocalTime>,
-    ) {
+    fn central(&mut self, ui: &mut egui::Ui, today: Option<atropos_core::time::LocalTime>) {
         let Some(frame) = self.frame.clone() else {
             ui.centered_and_justified(|ui| ui.label("Reading processes…"));
             return;
@@ -801,7 +800,7 @@ impl AtroposApp {
     fn on_history(
         &mut self,
         ctx: &egui::Context,
-        today: Option<atropos_core::platform::windows::LocalTime>,
+        today: Option<atropos_core::time::LocalTime>,
         now: Instant,
     ) {
         if self.actions.take_history_changed() && self.history.open {
@@ -813,7 +812,7 @@ impl AtroposApp {
         let Some(launch) = crate::history_view::show(ctx, &mut self.history, today) else {
             return;
         };
-        let elevated = atropos_core::platform::windows::current_process_elevated();
+        let elevated = atropos_core::platform::current_process_elevated();
         match atropos_core::history::restart(&mut WindowsPlatform::new(), &launch, elevated) {
             Ok(k) => self
                 .actions
@@ -824,6 +823,11 @@ impl AtroposApp {
 
     /// Installs or removes the Explorer entry the user just (un)ticked; a failed install leaves
     /// nothing half written.
+    #[cfg(not(windows))]
+    #[allow(clippy::unused_self)] // the same signature as the Windows one
+    fn set_explorer_menu(&mut self, _install: bool, _now: Instant) {}
+
+    #[cfg(windows)]
     fn set_explorer_menu(&mut self, install: bool, now: Instant) {
         let result = if install {
             std::env::current_exe()
@@ -876,7 +880,9 @@ impl AtroposApp {
         }
     }
 
+    #[cfg_attr(not(windows), allow(clippy::unused_self))] // the heap is counted on Windows only
     fn log_heap(&self) {
+        #[cfg(windows)]
         self.append_log(&startup::heap_line(crate::ALLOC.live_bytes()));
     }
 

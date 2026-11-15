@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
         .create(true)
         .append(true)
         .open(&path)?;
-    let key = atropos_core::platform::windows::current_process_key()?;
+    let key = atropos_core::platform::current_process_key()?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", atropos_fixtures::key_line(key))?;
     writeln!(out, "locked")?;

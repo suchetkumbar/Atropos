@@ -27,12 +27,19 @@ atropos-core = { path = "../atropos-core" }
 atropos-helper = { path = "../atropos-helper" }
 eframe = { version = "0.32.3", default-features = false, features = ["default_fonts"] }
 egui_extras = { version = "0.32.3", default-features = false }
-global-hotkey = "0.10.0"
-tray-icon = { version = "0.24.2", default-features = false }
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12", "wgsl"], optional = true }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+
+# Tray icon and global hotkey: Windows and macOS (on Linux tray-icon needs GTK, which breaks Z1).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+global-hotkey = "0.10.0"
+tray-icon = { version = "0.24.2", default-features = false }
+
+# eframe's windowing backends on Linux (its defaults are off above).
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.32.3", default-features = false, features = ["x11", "wayland"] }
 
 [build-dependencies]
 embed-resource = "3.0.12"

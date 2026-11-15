@@ -188,7 +188,7 @@ pub(crate) fn graceful(p: &Pinned, how: &Strategy, helper: Option<&Path>) -> Res
             Ok(())
         }
         Strategy::ConsoleCtrlC => helper.map_or(Err(CoreError::Unsupported), |h| run_helper(h, p)),
-        Strategy::None => Err(CoreError::Unsupported),
+        Strategy::None | Strategy::Signal => Err(CoreError::Unsupported),
     }
 }
 

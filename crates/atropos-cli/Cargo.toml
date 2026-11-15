@@ -23,3 +23,26 @@ serde_json = "1.0.154"
 
 [build-dependencies]
 embed-resource = "3.0.12"
+
+# `cargo deb -p atropos-cli` (after `cargo build --release --workspace`): one .deb with the CLI,
+# the GUI (as `atropos`) and the TUI. Depends are computed from the binaries (libc only; X11 /
+# Wayland / OpenGL are opened at run time).
+[package.metadata.deb]
+name = "atropos"
+maintainer = "Atropos contributors <https://github.com/suchetkumbar/Atropos>"
+copyright = "Atropos contributors"
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = """\
+Atropos is a process manager for developers: from a port or a locked file to the exact \
+process, readable names for dev servers, and safe subtree kills. Includes the GUI (atropos), \
+the CLI (atr) and a terminal UI for SSH sessions (atropos-tui)."""
+section = "utils"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/atr", "usr/bin/", "755"],
+    ["target/release/Atropos", "usr/bin/atropos", "755"],
+    ["target/release/atropos-tui", "usr/bin/", "755"],
+    ["../../packaging/linux/atropos.desktop", "usr/share/applications/", "644"],
+    ["../../README.md", "usr/share/doc/atropos/README.md", "644"],
+]

@@ -1,6 +1,6 @@
 //! Cell text. Locale-independent on purpose (Z4): fixed `.` decimals, ISO dates, 24-hour time.
 
-use atropos_core::platform::windows::LocalTime;
+use atropos_core::time::LocalTime;
 
 const KIB: f64 = 1024.0;
 const MIB: f64 = KIB * 1024.0;

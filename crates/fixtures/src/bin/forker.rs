@@ -15,13 +15,15 @@ fn arg(name: &str, default: u64) -> u64 {
 
 fn main() -> anyhow::Result<()> {
     let (max, secs) = (arg("--max", 40), arg("--secs", 60));
+    #[cfg(windows)]
     let _ = atropos_core::platform::windows::fixture_support::default_ctrl_c();
-    let key = atropos_core::platform::windows::current_process_key()?;
+    let key = atropos_core::platform::current_process_key()?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", atropos_fixtures::key_line(key))?;
     out.flush()?;
     drop(out);
-    let sleeper = std::env::current_exe()?.with_file_name("sleeper.exe");
+    let sleeper =
+        std::env::current_exe()?.with_file_name(format!("sleeper{}", std::env::consts::EXE_SUFFIX));
     let mut children = Vec::new();
     for _ in 0..max {
         if let Ok(c) = std::process::Command::new(&sleeper)

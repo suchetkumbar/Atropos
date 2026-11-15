@@ -7,8 +7,8 @@ use atropos_core::ProcKey;
 use atropos_core::collector::Frame;
 use atropos_core::engine::policy::{HardReason, SoftReason, Verdict};
 use atropos_core::engine::respawn::Respawn;
-use atropos_core::platform::windows::LocalTime;
 use atropos_core::projects::GroupPlan;
+use atropos_core::time::LocalTime;
 use eframe::egui::{self, RichText};
 
 use crate::format;
@@ -194,7 +194,7 @@ pub fn show(
             Kind::KillTree => "End process tree",
             Kind::Suspend => "Suspend process",
         });
-        let started = atropos_core::platform::windows::local_time(d.key.create_time)
+        let started = atropos_core::time::local_time(d.key.create_time)
             .zip(today)
             .map_or_else(String::new, |(t, td)| {
                 format!(" · started {}", format::started(t, td))

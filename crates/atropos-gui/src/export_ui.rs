@@ -22,21 +22,19 @@ pub fn folder(
     get: impl Fn(&str) -> Option<OsString>,
     is_dir: impl Fn(&std::path::Path) -> bool,
 ) -> PathBuf {
-    if let Some(home) = get("USERPROFILE").filter(|v| !v.is_empty()) {
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Some(home) = get(home).filter(|v| !v.is_empty()) {
         let downloads = PathBuf::from(home).join("Downloads");
         if is_dir(&downloads) {
             return downloads;
         }
     }
-    atropos_core::paths::log_dir_from(get)
-        .parent()
-        .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf)
-        .join("exports")
+    atropos_core::paths::data_dir_for(atropos_core::paths::OS, get).join("exports")
 }
 
 /// `atropos-snapshot-YYYYMMDD-HHMMSS.json`.
 #[must_use]
-pub fn file_name(t: Option<atropos_core::platform::windows::LocalTime>) -> String {
+pub fn file_name(t: Option<atropos_core::time::LocalTime>) -> String {
     match t {
         Some(t) => format!(
             "atropos-snapshot-{:04}{:02}{:02}-{:02}{:02}{:02}.json",
@@ -92,6 +90,7 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable as _;
 
+    #[cfg(windows)]
     #[test]
     fn exports_go_to_downloads_when_it_exists() {
         let home = r"C:\Users\José Müller";
@@ -109,7 +108,7 @@ mod tests {
 
     #[test]
     fn the_file_name_carries_the_time() {
-        let t = atropos_core::platform::windows::LocalTime {
+        let t = atropos_core::time::LocalTime {
             year: 2026,
             month: 11,
             day: 15,

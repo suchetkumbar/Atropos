@@ -4,9 +4,9 @@ use std::collections::HashSet;
 
 use atropos_core::collector::Frame;
 use atropos_core::platform::ProcEnv;
-use atropos_core::platform::windows::LocalTime;
 use atropos_core::secrets::{Masked, mask_with};
 use atropos_core::statics::Protection;
+use atropos_core::time::LocalTime;
 use atropos_core::{Field, ProcKey};
 use eframe::egui::{self, RichText};
 
@@ -125,7 +125,7 @@ fn overview(ui: &mut egui::Ui, frame: &Frame, key: ProcKey, today: Option<LocalT
             ui.label(p.raw.session.to_string());
             ui.end_row();
             ui.label(RichText::new("Started").weak());
-            let started = atropos_core::platform::windows::local_time(key.create_time)
+            let started = atropos_core::time::local_time(key.create_time)
                 .zip(today)
                 .filter(|_| key.create_time > 0)
                 .map_or_else(|| "—".to_owned(), |(t, d)| format::started(t, d));

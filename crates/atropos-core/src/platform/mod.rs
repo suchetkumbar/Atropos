@@ -11,12 +11,76 @@ use crate::ports::{ServiceInfo, Socket};
 use crate::statics::Statics;
 use crate::{ProcKey, Result};
 
+pub mod conformance;
 pub mod fake;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod windows;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub(crate) mod unix;
+
+/// Shows a fatal error the user must see: a message box on Windows (the GUI has no console),
+/// standard error elsewhere.
+pub fn fatal_message(title: &str, body: &str) {
+    #[cfg(windows)]
+    windows::fatal_message(title, body);
+    #[cfg(not(windows))]
+    eprintln!("{title}\n\n{body}");
+}
+
+/// Whether this process runs with administrator / root rights (Restart refuses then).
+#[must_use]
+pub fn current_process_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        windows::current_process_elevated()
+    }
+    #[cfg(unix)]
+    {
+        unix::effective_root()
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        false
+    }
+}
+
+/// The backend for the OS this was built for.
+#[cfg(windows)]
+pub type Native = windows::WindowsPlatform;
+#[cfg(target_os = "linux")]
+pub type Native = linux::LinuxPlatform;
+#[cfg(target_os = "macos")]
+pub type Native = macos::MacPlatform;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod macos;
+
 pub use fake::{FakePlatform, Reaction};
+
+/// The calling process's key on this OS (fixtures and the binaries' own identity).
+///
+/// # Errors
+/// If the OS cannot report it.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub fn current_process_key() -> Result<ProcKey> {
+    #[cfg(windows)]
+    {
+        windows::current_process_key()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::current_process_key()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::current_process_key()
+    }
+}
 
 /// One process as returned by a single scan (tier 0): identity plus the per-tick dynamic fields.
 #[derive(Debug, Clone, PartialEq, Eq)]

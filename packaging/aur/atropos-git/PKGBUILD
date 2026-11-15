@@ -1,0 +1,49 @@
+# AUR package (VCS): builds Atropos from the main branch. Publishing to the AUR is the
+# maintainer's step (an AUR account and `git push` to aur@aur.archlinux.org:atropos-git.git).
+pkgname=atropos-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Process manager for developers: from a port or a locked file to the exact process"
+arch=('x86_64' 'aarch64')
+url="https://github.com/suchetkumbar/Atropos"
+license=('MIT OR Apache-2.0')
+depends=('glibc' 'gcc-libs')
+makedepends=('git' 'cargo')
+provides=('atropos')
+conflicts=('atropos')
+source=("atropos::git+https://github.com/suchetkumbar/Atropos.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd atropos
+    printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd atropos
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd atropos
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p atropos-cli -p atropos-gui -p atropos-tui
+}
+
+check() {
+    cd atropos
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --frozen -p atropos-core --lib
+}
+
+package() {
+    cd atropos
+    install -Dm755 target/release/atr "$pkgdir/usr/bin/atr"
+    install -Dm755 target/release/Atropos "$pkgdir/usr/bin/atropos"
+    install -Dm755 target/release/atropos-tui "$pkgdir/usr/bin/atropos-tui"
+    install -Dm644 packaging/linux/atropos.desktop "$pkgdir/usr/share/applications/atropos.desktop"
+    install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+    install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

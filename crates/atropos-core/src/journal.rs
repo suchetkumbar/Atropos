@@ -3,7 +3,7 @@
 //! resume it; keys whose PID now belongs to another process are skipped.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::ProcKey;
@@ -14,13 +14,10 @@ use crate::ports::{ServiceInfo, Socket};
 use crate::statics::Statics;
 use crate::{Field, Result};
 
-/// `%LOCALAPPDATA%\Atropos\suspended.journal` (next to the logs folder).
+/// `suspended.journal` in the data folder (`%LOCALAPPDATA%\Atropos` on Windows).
 #[must_use]
 pub fn path() -> PathBuf {
-    crate::paths::log_dir()
-        .parent()
-        .map_or_else(std::env::temp_dir, Path::to_path_buf)
-        .join("suspended.journal")
+    crate::paths::data_dir().join("suspended.journal")
 }
 
 /// Outstanding suspends by key, mirrored to a file on every change.

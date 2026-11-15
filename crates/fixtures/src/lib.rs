@@ -51,7 +51,7 @@ impl Drop for SpawnedFixture {
 /// If the current exe path is unknown or the fixture has not been built.
 pub fn fixture_path(name: &str) -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe().context("current_exe")?;
-    let file = format!("{name}.exe");
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     exe.ancestors()
         .skip(1)
         .map(|dir| dir.join(&file))

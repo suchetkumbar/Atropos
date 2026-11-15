@@ -117,6 +117,7 @@ fn confirm(prompt: &str) -> bool {
 
 fn main() -> ExitCode {
     // Internal console helper for the kill engine: `__ctrl-c` / `__console-list <pid> <ct>`.
+    #[cfg(windows)]
     if matches!(
         std::env::args().nth(1).as_deref(),
         Some("__ctrl-c" | "__console-list")
@@ -136,14 +137,15 @@ fn main() -> ExitCode {
             }
         };
     };
-    let me = match atropos_core::platform::windows::current_process_key() {
+    let me = match atropos_core::platform::current_process_key() {
         Ok(k) => k,
         Err(e) => {
             eprintln!("atr: cannot read own process identity: {e}");
             return ExitCode::from(2);
         }
     };
-    let mut platform = atropos_core::platform::windows::WindowsPlatform::new();
+    let mut platform = atropos_core::platform::Native::new();
+    #[cfg(windows)]
     if let Ok(exe) = std::env::current_exe() {
         // atr.exe is itself the console Ctrl+C helper.
         platform = platform.with_ctrl_c_helper(exe);

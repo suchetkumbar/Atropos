@@ -2,7 +2,10 @@
 //! prompt; the GUI talks to it through [`client`]. Nothing persists after it exits.
 #![deny(unsafe_code)]
 
+#[cfg(windows)]
 pub mod client;
+#[cfg(windows)]
 pub mod host;
 pub mod protocol;
+#[cfg(windows)]
 pub mod server;

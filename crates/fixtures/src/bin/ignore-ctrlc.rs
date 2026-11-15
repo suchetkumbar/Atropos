@@ -1,8 +1,11 @@
 //! Fixture: a console app that ignores Ctrl+C. Prints its key line, then sleeps (`--secs`).
 
+#[cfg(windows)]
 use std::io::Write as _;
+#[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     let secs = std::env::args()
         .skip_while(|a| a != "--secs")
@@ -18,3 +21,7 @@ fn main() -> anyhow::Result<()> {
     std::thread::sleep(Duration::from_secs(secs));
     Ok(())
 }
+
+/// Windows only.
+#[cfg(not(windows))]
+fn main() {}

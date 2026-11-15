@@ -81,6 +81,18 @@ fn register(manager: &GlobalHotKeyManager, hotkey: HotKey, text: &str) -> Option
     }
 }
 
+/// The tray image: the exe's icon resource on Windows, the window icon's pixels elsewhere.
+fn tray_image() -> Result<tray_icon::Icon, String> {
+    #[cfg(windows)]
+    let icon = tray_icon::Icon::from_resource(1, None);
+    #[cfg(not(windows))]
+    let icon = {
+        let i = crate::icon::window_icon();
+        tray_icon::Icon::from_rgba(i.rgba, i.width, i.height)
+    };
+    icon.map_err(|e| e.to_string())
+}
+
 /// The hotkey and the tray icon, alive as long as this value.
 pub struct Summoner {
     manager: Option<GlobalHotKeyManager>,
@@ -112,7 +124,7 @@ impl Summoner {
             .and_then(|()| {
                 TrayIconBuilder::new()
                     .with_tooltip("Atropos")
-                    .with_icon(tray_icon::Icon::from_resource(1, None).map_err(|e| e.to_string())?)
+                    .with_icon(tray_image()?)
                     .with_menu(Box::new(menu))
                     .with_menu_on_left_click(false)
                     .build()

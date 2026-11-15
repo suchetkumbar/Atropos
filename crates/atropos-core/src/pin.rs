@@ -55,6 +55,12 @@ pub(crate) enum PinHandle {
     Fake,
     #[cfg(windows)]
     Windows(crate::platform::windows::OwnedHandle),
+    /// A pidfd (Linux 5.3+).
+    #[cfg(target_os = "linux")]
+    Linux(rustix::fd::OwnedFd),
+    /// A kqueue watching the process exit (macOS).
+    #[cfg(target_os = "macos")]
+    Mac(crate::platform::macos::MacPin),
 }
 
 /// A Job Object that contains the members of a subtree kill (spec §4.6 step 4).

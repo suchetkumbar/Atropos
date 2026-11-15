@@ -35,16 +35,50 @@ jobs:
             target/release/Atropos.exe
             target/release/atr.exe
 
-  linux-core:
-    # Core logic must stay platform-neutral: run it against the fake backend.
+  linux:
+    # Core logic against the fake backend, plus the Linux backend's conformance suite.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - name: core tests (fake backend)
-        run: cargo test -p atropos-core
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: tests + conformance suite (Linux backend)
+        run: cargo test --workspace
+      - name: .deb builds, installs and runs
+        run: |
+          cargo build --release -p atropos-cli -p atropos-gui -p atropos-tui
+          cargo install cargo-deb --version 3.8.0 --locked
+          cargo deb -p atropos-cli --no-build
+          sudo dpkg -i target/debian/*.deb
+          atr --version
+          sudo dpkg -r atropos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atropos-deb
+          path: target/debian/*.deb
+
+  macos:
+    # The macOS backend (spec Phase 7): clippy, core tests and the conformance suite.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: tests + conformance suite (macOS backend)
+        run: cargo test --workspace
+      - name: Homebrew formula (HEAD of main) installs and passes its test
+        if: github.ref == 'refs/heads/main'
+        run: |
+          brew tap-new --no-git local/atropos
+          cp packaging/homebrew/atropos.rb "$(brew --repository local/atropos)/Formula/"
+          brew install --HEAD local/atropos/atropos
+          brew test local/atropos/atropos
 
   perf:
     needs: windows

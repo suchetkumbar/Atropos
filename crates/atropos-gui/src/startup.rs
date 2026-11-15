@@ -10,6 +10,7 @@ pub fn elapsed_ms(create_time: u64, now: u64) -> f64 {
 /// The `--startup-log` line perf.ps1 reads for the idle-memory budget (ADR 0005).
 #[must_use]
 #[allow(clippy::cast_precision_loss)] // heap sizes are far below 2^52
+#[cfg_attr(not(windows), allow(dead_code))] // the heap is counted on Windows only
 pub fn heap_line(live_bytes: usize) -> String {
     format!("app_heap_mb={:.1}", live_bytes as f64 / (1024.0 * 1024.0))
 }

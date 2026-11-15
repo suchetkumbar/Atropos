@@ -1,9 +1,11 @@
 //! Fixture: a GUI-subsystem app with one visible top-level window (placed off-screen) that exits
 //! when it receives `WM_CLOSE`. Prints its key line first; exits anyway after `--secs`.
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(windows)]
 use std::io::Write as _;
 
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     let secs = std::env::args()
         .skip_while(|a| a != "--secs")
@@ -18,3 +20,7 @@ fn main() -> anyhow::Result<()> {
     atropos_core::platform::windows::fixture_support::run_window("atropos-test-window", secs)?;
     Ok(())
 }
+
+/// Windows only.
+#[cfg(not(windows))]
+fn main() {}

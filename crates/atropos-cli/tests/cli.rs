@@ -14,14 +14,16 @@ fn version_prints_name_and_version() {
 fn missing_gui_exits_1_with_message() {
     let dir = std::env::temp_dir().join(format!("atropos cli test ü {}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let atr = dir.join("atr.exe");
+    let atr = dir.join(format!("atr{}", std::env::consts::EXE_SUFFIX));
     std::fs::copy(env!("CARGO_BIN_EXE_atr"), &atr).unwrap();
     let out = Command::new(&atr).output().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Atropos.exe not found next to"));
+    let gui = format!("Atropos{} not found next to", std::env::consts::EXE_SUFFIX);
+    assert!(String::from_utf8_lossy(&out.stderr).contains(&gui));
 }
 
+#[cfg(windows)]
 #[test]
 fn ctrl_c_helper_rejects_bad_arguments_with_exit_2() {
     for args in [
@@ -37,6 +39,7 @@ fn ctrl_c_helper_rejects_bad_arguments_with_exit_2() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn ctrl_c_helper_refuses_a_key_that_does_not_exist() {
     // PID 4 is System; create time 1 can never match it, so identity validation fails (exit 1)
@@ -48,6 +51,7 @@ fn ctrl_c_helper_refuses_a_key_that_does_not_exist() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+#[cfg(windows)]
 #[allow(clippy::unwrap_used)] // test code
 mod commands {
     use std::net::TcpListener;

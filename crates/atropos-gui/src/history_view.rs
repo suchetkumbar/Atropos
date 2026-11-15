@@ -3,7 +3,7 @@
 //! shown here (only how many there are); neither is the command line, which can carry tokens.
 
 use atropos_core::history::{Entry, Launch};
-use atropos_core::platform::windows::{LocalTime, local_time};
+use atropos_core::time::{LocalTime, local_time};
 use eframe::egui;
 
 use crate::format;

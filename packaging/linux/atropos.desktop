@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Atropos
+GenericName=Process manager
+Comment=Cut the right thread: find and end the right process
+Exec=atropos
+Terminal=false
+Categories=System;Monitor;Development;
+Keywords=process;kill;port;task;manager;

@@ -1,5 +1,6 @@
 //! The real helper (`Atropos.exe --elevated-helper`) over its real pipe. Started without UAC here
 //! (the elevation itself is a manual QA item); it only ever acts on processes this test started.
+#![cfg(windows)]
 #![allow(clippy::unwrap_used)] // test code
 
 use std::os::windows::process::CommandExt as _;

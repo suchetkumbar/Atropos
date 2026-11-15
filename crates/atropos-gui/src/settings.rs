@@ -96,7 +96,10 @@ pub fn show(ctx: &egui::Context, ui_state: &mut SettingsUi, cfg: &mut Config) ->
                     }
                     ui.end_row();
 
-                    hotkey_row(ui, ui_state, cfg);
+                    // Linux has no global hotkey (see summon_stub.rs).
+                    if cfg!(any(windows, target_os = "macos")) {
+                        hotkey_row(ui, ui_state, cfg);
+                    }
 
                     if let Some(mut installed) = ui_state.explorer_menu {
                         ui.label("Explorer");
@@ -140,12 +143,11 @@ fn hotkey_row(ui: &mut egui::Ui, ui_state: &mut SettingsUi, cfg: &mut Config) {
             .labelled_by(label.id)
             .on_hover_text("Opens the command palette from any program, e.g. Ctrl+Alt+K");
         if r.lost_focus() {
-            match crate::summon::parse_hotkey(text) {
-                Ok(_) => {
-                    text.trim().clone_into(&mut cfg.hotkey);
-                    ui_state.hotkey_err = None;
-                }
-                Err(e) => ui_state.hotkey_err = Some(e),
+            if let Err(e) = crate::summon::parse_hotkey(text) {
+                ui_state.hotkey_err = Some(e);
+            } else {
+                text.trim().clone_into(&mut cfg.hotkey);
+                ui_state.hotkey_err = None;
             }
         }
         if let Some(e) = &ui_state.hotkey_err {
@@ -222,6 +224,7 @@ mod tests {
         assert_eq!(h.state().cfg, Config::default());
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     /// Types `text` into the hotkey field and moves focus away (the value is checked then).
     fn set_hotkey(h: &mut Harness<'static, S>, text: &str) {
         let field = h.get_by_label("Global hotkey");
@@ -242,6 +245,7 @@ mod tests {
         h.run();
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_valid_hotkey_is_taken() {
         let mut h = harness();
@@ -250,6 +254,7 @@ mod tests {
         assert_eq!(h.state().cfg.hotkey, "Ctrl+Shift+Space");
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_hotkey_without_ctrl_alt_or_win_is_refused_with_a_reason() {
         let mut h = harness();

@@ -11,8 +11,9 @@ use atropos_core::engine::executor::{self, Event, Executor, Request};
 use atropos_core::engine::kill::{KillOpts, Outcome};
 use atropos_core::engine::policy::{ActionKind, Verdict};
 use atropos_core::history::{self, Launch};
-use atropos_core::platform::windows::{LocalTime, WindowsPlatform};
+use atropos_core::platform::Native as WindowsPlatform;
 use atropos_core::platform::{Platform as _, ProcEnv};
+use atropos_core::time::LocalTime;
 use eframe::egui;
 
 use crate::dialog::{self, Answer, Dialog, GroupDialog, Kind};
@@ -188,7 +189,7 @@ impl Actions {
         };
         let entry = history::Entry {
             v: history::VERSION,
-            at: atropos_core::platform::windows::now_filetime(),
+            at: atropos_core::time::now_filetime(),
             pid: key.pid,
             create_time: key.create_time,
             name: self.name(key),
@@ -211,7 +212,9 @@ impl Actions {
             tracing::error!("own process identity unknown; actions disabled");
             return Self::new(None);
         };
+        #[cfg_attr(not(windows), allow(unused_mut))] // only Windows adds the Ctrl+C helper
         let mut platform = WindowsPlatform::new();
+        #[cfg(windows)]
         if let Some(atr) = std::env::current_exe()
             .ok()
             .map(|exe| exe.with_file_name("atr.exe"))
@@ -383,7 +386,8 @@ impl Actions {
             None => return,
         };
         for ev in events {
-            let retry = retry_for(&ev);
+            // The elevated helper exists on Windows only: elsewhere no retry is offered.
+            let retry = retry_for(&ev).filter(|_| cfg!(windows));
             match ev {
                 Event::Progress(key, p) => {
                     self.status.insert(key, toast::progress_text(&p));

@@ -1,7 +1,7 @@
 <p align="center"><img src="assets/atropos-256.png" width="96" alt="Atropos icon"></p>
 
 <h1 align="center">Atropos</h1>
-<p align="center"><b>Cut the right thread.</b><br>A process manager for developers on Windows: from a port to the process that owns it, and a safe way to stop it — or its whole tree.</p>
+<p align="center"><b>Cut the right thread.</b><br>A process manager for developers on Windows, Linux and macOS: from a port to the process that owns it, and a safe way to stop it — or its whole tree.</p>
 
 <p align="center"><img src="assets/media/atr-port-kill.gif" alt="atr port 3000 finds node.exe on IPv4 and IPv6, --kill ends it gracefully, and the port is free" width="760"></p>
 
@@ -21,6 +21,19 @@
 | Scoop | `scoop install atropos` *(once published)* | No |
 
 No runtime to install (the C runtime is linked statically), no configuration, no service, no network. Releases are built for x64 and ARM64.
+
+**Linux and macOS** (1.0):
+
+| Method | Command | Notes |
+|---|---|---|
+| Debian / Ubuntu | `sudo apt install ./atropos_<version>_amd64.deb` from [Releases](https://github.com/suchetkumbar/Atropos/releases) | depends on glibc only |
+| Arch Linux | `atropos-git` from the AUR *(once published)* | |
+| macOS | `brew install <tap>/atropos` *(once the tap is published)* | |
+
+All three include `atr`, the GUI (`atropos`) and **`atropos-tui`**, a terminal UI for SSH sessions (`/` search with the same syntax, `d` / `D` to end a process or its tree, `q` to quit). Per OS:
+- **Linux:** needs kernel 5.3+ (pidfds). There is no tray icon and no global hotkey: those need GTK libraries Atropos does not depend on.
+- **macOS:** ports and file locks come from the system `lsof` ([ADR 0009](docs/adr/0009-macos-pins-and-lsof.md)).
+- **Windows only:** Restart, efficiency mode, the Explorer menu and "Retry as administrator".
 
 **First run of a download:** unsigned builds trigger SmartScreen ("More info → Run anyway"), and Windows 11 **Smart App Control blocks unsigned apps entirely** until releases are code-signed — see [signing notes](docs/notes/signing.md).
 
@@ -97,7 +110,7 @@ label = "Orders API · {project}"       # {project} = package.json / Cargo.toml 
 
 ## Privacy
 
-Atropos makes **no network calls** and sends **no telemetry**. It writes only its logs (`%LOCALAPPDATA%\Atropos\logs`), your settings once you change one (`%APPDATA%\Atropos\config.toml`), and a suspend journal while processes are suspended.
+Atropos makes **no network calls** and sends **no telemetry**. It writes only its logs (`%LOCALAPPDATA%\Atropos\logs`), your settings once you change one (`%APPDATA%\Atropos\config.toml`), the kill history, and a suspend journal while processes are suspended. On Linux these live in `~/.local/state/atropos` and `~/.config/atropos` (XDG), on macOS in `~/Library/Application Support/Atropos`.
 
 ## Build from source
 
@@ -109,6 +122,8 @@ cargo test --workspace
 pwsh scripts/perf.ps1 -Mode all            # budgets: startup, memory, CPU, size, CLI
 pwsh scripts/package.ps1                   # dist\ zip (+ MSI when WiX is installed)
 ```
+
+Linux / macOS: Rust (pinned in `rust-toolchain.toml`), then `cargo build --release --workspace`. Packages: `cargo deb -p atropos-cli --no-build` (after the release build), `packaging/aur/atropos-git/PKGBUILD`, `packaging/homebrew/atropos.rb`.
 
 ## License
 

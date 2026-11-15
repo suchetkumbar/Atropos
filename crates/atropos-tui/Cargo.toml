@@ -1,0 +1,21 @@
+[package]
+name = "atropos-tui"
+description = "Atropos terminal UI (atropos-tui), for SSH sessions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "atropos-tui"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+atropos-core = { path = "../atropos-core" }
+crossbeam-channel = "0.5"
+ratatui = { version = "0.29.0", default-features = false, features = ["crossterm"] }

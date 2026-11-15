@@ -5,7 +5,12 @@ use std::path::Path;
 /// Builds the dialog body for a startup failure or a crash.
 pub fn body(renderer: &str, detail: &str, log_dir: &Path) -> String {
     format!(
-        "The {renderer} renderer failed:\n\n{detail}\n\nThis can happen on virtual machines or remote sessions without graphics acceleration.\nLog folder: {}",
+        "The {renderer} renderer failed:\n\n{detail}\n\nThis can happen on virtual machines or remote sessions without graphics acceleration.{}\nLog folder: {}",
+        if cfg!(windows) {
+            ""
+        } else {
+            "\nIn a terminal without a desktop (e.g. over SSH), run atropos-tui instead."
+        },
         log_dir.display()
     )
 }
@@ -14,7 +19,7 @@ pub fn body(renderer: &str, detail: &str, log_dir: &Path) -> String {
 pub fn install_panic_hook(renderer: &'static str) {
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("panic: {info}");
-        atropos_core::platform::windows::fatal_message(
+        atropos_core::platform::fatal_message(
             "Atropos stopped unexpectedly",
             &body(renderer, &info.to_string(), &atropos_core::paths::log_dir()),
         );

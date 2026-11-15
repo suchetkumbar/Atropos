@@ -4,16 +4,7 @@
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
-/// A local date and time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocalTime {
-    pub year: u16,
-    pub month: u16,
-    pub day: u16,
-    pub hour: u16,
-    pub minute: u16,
-    pub second: u16,
-}
+pub use crate::time::LocalTime;
 
 /// Converts FILETIME ticks (UTC) to the current time zone; `None` if out of range.
 #[must_use]

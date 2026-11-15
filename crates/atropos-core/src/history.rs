@@ -62,13 +62,10 @@ impl Entry {
     }
 }
 
-/// `%LOCALAPPDATA%\Atropos\history.jsonl` (next to the logs folder).
+/// `history.jsonl` in the data folder (`%LOCALAPPDATA%\Atropos` on Windows).
 #[must_use]
 pub fn path() -> PathBuf {
-    crate::paths::log_dir()
-        .parent()
-        .map_or_else(std::env::temp_dir, Path::to_path_buf)
-        .join("history.jsonl")
+    crate::paths::data_dir().join("history.jsonl")
 }
 
 /// The rotated generation of `path`.

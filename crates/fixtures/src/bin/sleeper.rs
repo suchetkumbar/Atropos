@@ -14,8 +14,9 @@ fn main() -> anyhow::Result<()> {
     }
     // Behave like a process started from a terminal, whatever the test runner inherited.
     // (No console at all, e.g. a detached start, is fine: then nothing to restore.)
+    #[cfg(windows)]
     let _ = atropos_core::platform::windows::fixture_support::default_ctrl_c();
-    let key = atropos_core::platform::windows::current_process_key()?;
+    let key = atropos_core::platform::current_process_key()?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", atropos_fixtures::key_line(key))?;
     out.flush()?;

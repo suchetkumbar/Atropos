@@ -156,6 +156,19 @@ impl FakePlatform {
         self.statics_calls
     }
 
+    /// Adds a running process to the current list and every queued one (conformance spawns).
+    pub fn start(&mut self, p: RawProc) {
+        for f in &mut self.frames {
+            f.push(p.clone());
+        }
+        self.last.push(p);
+    }
+
+    /// Marks every process in the current list as exited.
+    pub fn exit_all(&mut self) {
+        self.exited.extend(self.last.iter().map(|p| p.key));
+    }
+
     /// Queues the process list returned by a future `scan()`.
     pub fn push_frame(&mut self, procs: Vec<RawProc>) {
         self.frames.push_back(procs);
@@ -263,6 +276,7 @@ impl Platform for FakePlatform {
         })
     }
 
+    #[cfg_attr(not(windows), allow(irrefutable_let_patterns))]
     fn assign(&mut self, job: &Job, p: &Pinned) -> Result<()> {
         let JobHandle::Fake(i) = job.handle else {
             return Err(CoreError::Unsupported);
@@ -271,6 +285,7 @@ impl Platform for FakePlatform {
         Ok(())
     }
 
+    #[cfg_attr(not(windows), allow(irrefutable_let_patterns))]
     fn terminate_job(&mut self, job: &Job) -> Result<()> {
         let JobHandle::Fake(i) = job.handle else {
             return Err(CoreError::Unsupported);

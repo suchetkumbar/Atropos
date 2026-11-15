@@ -2,7 +2,17 @@
 
 use std::process::Command;
 
+/// Read-only liveness probe via `ps` (Unix); never signals anything.
+#[cfg(not(windows))]
+fn process_alive(pid: u32) -> bool {
+    Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == pid.to_string())
+}
+
 /// Read-only liveness probe via `tasklist`; never signals anything.
+#[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
     Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
